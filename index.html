@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kindle Wallpaper</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0f0f0f">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0f0f0f;
+      --surface: #191919;
+      --border:  #2c2c2c;
+      --text:    #dedad5;
+      --muted:   #484848;
+      --paper:   #e8e4df;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, sans-serif;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      gap: 28px;
+    }
+
+    header {
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    /* ── Drop zone ── */
+    #drop {
+      width: min(340px, 100%);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      padding: 52px 24px;
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s, background 0.12s;
+    }
+    #drop.over {
+      border-color: #555;
+      background: var(--surface);
+    }
+    #drop p {
+      font-size: 15px;
+      color: #606060;
+      line-height: 1.7;
+    }
+    #drop code {
+      display: block;
+      margin-top: 12px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 10px;
+      color: #333;
+      letter-spacing: 0.05em;
+    }
+
+    /* ── Result ── */
+    #result {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+
+    /* Kindle device mockup */
+    .device {
+      background: #1d1d1d;
+      border-radius: 14px;
+      padding: 12px 12px 30px;
+      box-shadow:
+        0 0 0 1px #2e2e2e,
+        inset 0 0 0 1px #111,
+        0 24px 64px rgba(0,0,0,.7);
+      position: relative;
+    }
+    .device::after {
+      content: 'kindle';
+      position: absolute;
+      bottom: 9px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 8px;
+      letter-spacing: 0.2em;
+      color: #383838;
+    }
+    .screen {
+      width: 220px;
+      height: 297px;
+      background: var(--paper);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .screen img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    /* ── Buttons ── */
+    .btn-row {
+      display: flex;
+      gap: 10px;
+    }
+    button {
+      border-radius: 6px;
+      padding: 11px 24px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      letter-spacing: 0.02em;
+    }
+    #btn-send {
+      background: var(--text);
+      color: var(--bg);
+    }
+    #btn-download {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    #btn-reset {
+      background: none;
+      border: none;
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 400;
+      padding: 4px 0;
+    }
+    #btn-reset:hover { color: var(--text); }
+
+    canvas, input[type=file] { display: none; }
+  </style>
+</head>
+<body>
+
+<header>Kindle Wallpaper</header>
+
+<div id="drop">
+  <p>Drop an image<br>or tap to choose</p>
+  <code>1072 × 1448 · grayscale · PNG</code>
+</div>
+
+<section id="result">
+  <div class="device">
+    <div class="screen">
+      <img id="preview" alt="Preview">
+    </div>
+  </div>
+  <div class="btn-row">
+    <button id="btn-send">Send to Kindle</button>
+    <button id="btn-download">Download</button>
+  </div>
+  <button id="btn-reset">Use a different image</button>
+</section>
+
+<canvas id="canvas"></canvas>
+<input type="file" id="file-input" accept="image/*">
+
+<script>
+const W = 1072, H = 1448;
+const PENDING_CACHE = 'kw-pending-v1';
+
+const canvas    = document.getElementById('canvas');
+const ctx       = canvas.getContext('2d');
+const drop      = document.getElementById('drop');
+const result    = document.getElementById('result');
+const preview   = document.getElementById('preview');
+const fileInput = document.getElementById('file-input');
+
+let outputBlob = null;
+let previewUrl = null;
+
+// ── Service worker ──
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(console.error);
+}
+
+// ── Check for shared image on load ──
+window.addEventListener('load', async () => {
+  const params = new URLSearchParams(location.search);
+  if (params.get('shared') !== '1') return;
+  history.replaceState(null, '', location.pathname);
+
+  try {
+    await navigator.serviceWorker.ready;
+    const cache = await caches.open(PENDING_CACHE);
+    const res = await cache.match('/pending-image');
+    if (!res) return;
+    const blob = await res.blob();
+    await cache.delete('/pending-image');
+    processBlob(blob);
+  } catch (e) {
+    console.error('[App] Failed to load shared image:', e);
+  }
+});
+
+// ── Drop zone ──
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => {
+  if (e.target.files[0]) processBlob(e.target.files[0]);
+});
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f?.type.startsWith('image/')) processBlob(f);
+});
+
+// ── Send to Kindle (Web Share API → X-Plore or any app) ──
+document.getElementById('btn-send').addEventListener('click', async () => {
+  if (!outputBlob) return;
+  const file = new File([outputBlob], 'kindle-wallpaper.png', { type: 'image/png' });
+
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: 'Kindle Wallpaper' });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return; // user cancelled, do nothing
+    }
+  }
+  // Fallback if Web Share not supported
+  triggerDownload();
+});
+
+// ── Download ──
+document.getElementById('btn-download').addEventListener('click', triggerDownload);
+
+function triggerDownload() {
+  if (!outputBlob) return;
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(outputBlob),
+    download: 'kindle-wallpaper.png'
+  });
+  a.click();
+}
+
+// ── Reset ──
+document.getElementById('btn-reset').addEventListener('click', () => {
+  outputBlob = null;
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  fileInput.value = '';
+  result.style.display = 'none';
+  drop.style.display = '';
+});
+
+// ── Process image ──
+function processBlob(blob) {
+  const img = new Image();
+  const url = URL.createObjectURL(blob);
+
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+
+    canvas.width = W;
+    canvas.height = H;
+
+    const scale = Math.max(W / img.width, H / img.height);
+    const w = img.width * scale;
+    const h = img.height * scale;
+    const x = (W - w) / 2;
+    const y = (H - h) / 2;
+
+    ctx.filter = 'grayscale(100%)';
+    ctx.drawImage(img, x, y, w, h);
+
+    canvas.toBlob(b => {
+      outputBlob = b;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = URL.createObjectURL(b);
+      preview.src = previewUrl;
+      drop.style.display = 'none';
+      result.style.display = 'flex';
+    }, 'image/png');
+  };
+
+  img.onerror = () => URL.revokeObjectURL(url);
+  img.src = url;
+}
+</script>
+</body>
+</html>
