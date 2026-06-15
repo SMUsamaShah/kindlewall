@@ -6,15 +6,17 @@
   <title>Kindle Wallpaper</title>
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#0f0f0f">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
       --bg:      #0f0f0f;
       --surface: #191919;
-      --border:  #2c2c2c;
+      --border:  #262626;
       --text:    #dedad5;
       --muted:   #484848;
+      --accent:  #6b9cf8;
       --paper:   #e8e4df;
     }
 
@@ -26,123 +28,172 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      padding: 24px;
-      gap: 28px;
     }
 
-    header {
+    body > header {
       font-size: 11px;
       letter-spacing: 0.14em;
       text-transform: uppercase;
       color: var(--muted);
       font-weight: 500;
+      padding: 20px 0 0;
     }
 
-    /* ── Drop zone ── */
-    #drop {
-      width: min(340px, 100%);
-      border: 1px dashed var(--border);
-      border-radius: 8px;
-      padding: 52px 24px;
-      text-align: center;
-      cursor: pointer;
-      user-select: none;
-      transition: border-color 0.15s, background 0.12s;
-    }
-    #drop.over {
-      border-color: #555;
-      background: var(--surface);
-    }
-    #drop p {
-      font-size: 15px;
-      color: #606060;
-      line-height: 1.7;
-    }
-    #drop code {
-      display: block;
-      margin-top: 12px;
-      font-family: 'SF Mono', 'Consolas', monospace;
-      font-size: 10px;
-      color: #333;
-      letter-spacing: 0.05em;
-    }
-
-    /* ── Result ── */
-    #result {
+    .section {
       display: none;
       flex-direction: column;
       align-items: center;
-      gap: 20px;
+      width: 100%;
+      max-width: 400px;
+      padding: 18px 20px 32px;
+      gap: 18px;
+    }
+    .section.active { display: flex; }
+
+    /* ── Mode tabs ── */
+    .tabs {
+      display: flex;
+      background: var(--surface);
+      border-radius: 9px;
+      padding: 3px;
+      gap: 3px;
+    }
+    .tab {
+      background: none;
+      border: none;
+      border-radius: 7px;
+      padding: 8px 22px;
+      font-size: 13px;
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 500;
+      font-family: inherit;
+      transition: background 0.14s, color 0.14s;
+    }
+    .tab.active {
+      background: var(--bg);
+      color: var(--text);
+      box-shadow: 0 1px 3px rgba(0,0,0,.5);
     }
 
-    /* Kindle device mockup */
+    /* ── Drop zone ── */
+    #dropzone {
+      width: 100%;
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      padding: 56px 24px;
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.14s, background 0.12s;
+    }
+    #dropzone.over { border-color: #444; background: var(--surface); }
+    #dropzone p { font-size: 15px; color: #555; line-height: 1.75; }
+    #dropzone code {
+      display: block;
+      margin-top: 10px;
+      font-size: 10px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      color: #2e2e2e;
+      letter-spacing: 0.05em;
+    }
+
+    /* ── Crop section ── */
+    .hint {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .crop-wrap {
+      width: 100%;
+      height: 62dvh;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    #crop-img { display: block; max-width: 100%; }
+
+    /* ── Kindle device mockup ── */
     .device {
       background: #1d1d1d;
       border-radius: 14px;
-      padding: 12px 12px 30px;
-      box-shadow:
-        0 0 0 1px #2e2e2e,
-        inset 0 0 0 1px #111,
-        0 24px 64px rgba(0,0,0,.7);
+      padding: 12px 12px 28px;
+      box-shadow: 0 0 0 1px #2c2c2c, 0 20px 60px rgba(0,0,0,.7);
       position: relative;
     }
     .device::after {
       content: 'kindle';
       position: absolute;
-      bottom: 9px;
+      bottom: 8px;
       left: 50%;
       transform: translateX(-50%);
       font-size: 8px;
       letter-spacing: 0.2em;
-      color: #383838;
+      color: #333;
     }
     .screen {
-      width: 220px;
-      height: 297px;
+      width: 210px;
+      height: 284px;
       background: var(--paper);
-      border-radius: 2px;
       overflow: hidden;
+      border-radius: 2px;
     }
-    .screen img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
+    .screen img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-    /* ── Buttons ── */
-    .btn-row {
+    /* ── Filter row ── */
+    .filter-row {
       display: flex;
       gap: 10px;
+      overflow-x: auto;
+      width: 100%;
+      padding-bottom: 4px;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
     }
+    .filter-row::-webkit-scrollbar { display: none; }
+
+    .filter-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .filter-item canvas {
+      border-radius: 3px;
+      border: 2px solid transparent;
+      transition: border-color 0.12s;
+      display: block;
+    }
+    .filter-item.sel canvas { border-color: var(--accent); }
+    .filter-item span {
+      font-size: 9px;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .filter-item.sel span { color: var(--accent); }
+
+    /* ── Buttons ── */
+    .btn-row  { display: flex; gap: 10px; }
+    .ghost-row { display: flex; gap: 16px; }
+
     button {
       border-radius: 6px;
-      padding: 11px 24px;
+      cursor: pointer;
+      font-family: inherit;
       font-size: 13px;
       font-weight: 600;
-      cursor: pointer;
       border: none;
+      padding: 11px 22px;
       letter-spacing: 0.02em;
     }
-    #btn-send {
-      background: var(--text);
-      color: var(--bg);
-    }
-    #btn-download {
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-    }
-    #btn-reset {
-      background: none;
-      border: none;
-      font-size: 11px;
-      color: var(--muted);
-      font-weight: 400;
-      padding: 4px 0;
-    }
-    #btn-reset:hover { color: var(--text); }
+    .primary   { background: var(--text); color: var(--bg); }
+    .secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .ghost     { background: none; border: none; font-size: 12px; color: var(--muted); padding: 4px 0; font-weight: 400; }
+    .ghost:hover { color: var(--text); }
 
     canvas, input[type=file] { display: none; }
   </style>
@@ -151,52 +202,164 @@
 
 <header>Kindle Wallpaper</header>
 
-<div id="drop">
-  <p>Drop an image<br>or tap to choose</p>
-  <code>1072 × 1448 · grayscale · PNG</code>
+<!-- Step 1: Drop + mode select -->
+<div id="sec-drop" class="section active">
+  <div class="tabs">
+    <button class="tab active" data-mode="auto">Auto Fit</button>
+    <button class="tab" data-mode="manual">Manual Crop</button>
+  </div>
+  <div id="dropzone">
+    <p>Drop an image<br>or tap to choose</p>
+    <code>1072 × 1448 · grayscale</code>
+  </div>
 </div>
 
-<section id="result">
-  <div class="device">
-    <div class="screen">
-      <img id="preview" alt="Preview">
-    </div>
+<!-- Step 2: Manual crop -->
+<div id="sec-crop" class="section">
+  <p class="hint">Drag to move · Pinch to zoom</p>
+  <div class="crop-wrap">
+    <img id="crop-img" alt="">
   </div>
   <div class="btn-row">
-    <button id="btn-send">Send to Kindle</button>
-    <button id="btn-download">Download</button>
+    <button class="secondary" id="btn-back-crop">← Back</button>
+    <button class="primary"   id="btn-confirm-crop">Use this crop</button>
   </div>
-  <button id="btn-reset">Use a different image</button>
-</section>
+</div>
 
-<canvas id="canvas"></canvas>
+<!-- Step 3: Filter + preview -->
+<div id="sec-filter" class="section">
+  <div class="device">
+    <div class="screen">
+      <img id="preview-img" alt="">
+    </div>
+  </div>
+  <div id="filter-row" class="filter-row"></div>
+  <div class="btn-row">
+    <button class="primary"   id="btn-send">Send to Kindle</button>
+    <button class="secondary" id="btn-dl">Download</button>
+  </div>
+  <div class="ghost-row">
+    <button class="ghost" id="btn-recrop" style="display:none">← Re-crop</button>
+    <button class="ghost" id="btn-reset">Different image</button>
+  </div>
+</div>
+
+<canvas id="work-canvas"></canvas>
 <input type="file" id="file-input" accept="image/*">
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
 <script>
+/* ── Constants ── */
 const W = 1072, H = 1448;
 const PENDING_CACHE = 'kw-pending-v1';
+const THUMB_W = 36, THUMB_H = 49; // 36 × (36 * H/W) ≈ 49
 
-const canvas    = document.getElementById('canvas');
-const ctx       = canvas.getContext('2d');
-const drop      = document.getElementById('drop');
-const result    = document.getElementById('result');
-const preview   = document.getElementById('preview');
-const fileInput = document.getElementById('file-input');
+/* ── Filters
+ *
+ * Each fn(r,g,b) returns a greyscale value 0-255.
+ * All use luminosity-weighted greyscale as base except Portrait and Landscape
+ * which use different channel mixes for different aesthetic effects.
+ *
+ * Kindle filter also gets an unsharp mask pass (GPU-blurred blur → subtract).
+ */
+const FILTERS = [
+  {
+    id: 'natural', label: 'Natural',
+    fn: (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b
+  },
+  {
+    id: 'vivid', label: 'Vivid',
+    // S-curve: darkens shadows, brightens highlights — punchier contrast
+    fn: (r, g, b) => {
+      const v = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
+      const s = v < 0.5 ? 2*v*v : 1 - 2*(1-v)*(1-v);
+      return s * 255;
+    }
+  },
+  {
+    id: 'deep', label: 'Deep',
+    // Clips input below 25 and stretches remainder to 0-255 — deep blacks
+    fn: (r, g, b) => Math.max(0, Math.min(255,
+      (0.2126*r + 0.7152*g + 0.0722*b - 25) * (255 / 210)
+    ))
+  },
+  {
+    id: 'bright', label: 'Bright',
+    // Gamma < 1 lifts shadows without blowing highlights — good for dark photos
+    fn: (r, g, b) => Math.pow((0.2126*r + 0.7152*g + 0.0722*b) / 255, 0.65) * 255
+  },
+  {
+    id: 'portrait', label: 'Portrait',
+    // Green-heavy channel mix + compressed range → smooth, flattering skin tones
+    fn: (r, g, b) => 20 + (0.15*r + 0.72*g + 0.13*b) / 255 * 215
+  },
+  {
+    id: 'landscape', label: 'Landscape',
+    // Red-heavy (infrared-ish) → dark skies, bright foliage — dramatic outdoors
+    fn: (r, g, b) => Math.max(0, Math.min(255,
+      (0.55*r + 0.33*g + 0.12*b - 10) * (255 / 230)
+    ))
+  },
+  {
+    id: 'kindle', label: 'Kindle', unsharp: true,
+    // Strong S-curve + level stretch + unsharp mask → optimised for e-ink clarity
+    fn: (r, g, b) => {
+      const v = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
+      const base = v < 0.5 ? 2*v*v : 1 - 2*(1-v)*(1-v);
+      // Blend beyond full S-curve for extra punch (strength 1.5)
+      const s = Math.max(0, Math.min(1, v + 1.5 * (base - v)));
+      return Math.max(0, Math.min(255, (s * 255 - 15) * (255 / 225)));
+    }
+  }
+];
 
+/* ── State ── */
+let mode = 'auto';
+let cropper = null;
+let cropBlobUrl = null;
+let originalBlob = null;
+let sourceCanvas = null;
 let outputBlob = null;
 let previewUrl = null;
+let currentFilter = FILTERS[0].id;
 
-// ── Service worker ──
+/* ── Elements ── */
+const $ = id => document.getElementById(id);
+const workCanvas = $('work-canvas');
+const workCtx    = workCanvas.getContext('2d');
+const dropzone   = $('dropzone');
+const fileInput  = $('file-input');
+const cropImg    = $('crop-img');
+const filterRow  = $('filter-row');
+const previewImg = $('preview-img');
+
+workCanvas.width = W; workCanvas.height = H;
+
+/* ── Section switching ── */
+function show(name) {
+  document.querySelectorAll('.section').forEach(s =>
+    s.classList.toggle('active', s.id === `sec-${name}`)
+  );
+}
+
+/* ── Mode tabs ── */
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    mode = btn.dataset.mode;
+  });
+});
+
+/* ── Service worker ── */
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(console.error);
 }
 
-// ── Check for shared image on load ──
+/* ── Handle image shared via share target ── */
 window.addEventListener('load', async () => {
-  const params = new URLSearchParams(location.search);
-  if (params.get('shared') !== '1') return;
+  if (new URLSearchParams(location.search).get('shared') !== '1') return;
   history.replaceState(null, '', location.pathname);
-
   try {
     await navigator.serviceWorker.ready;
     const cache = await caches.open(PENDING_CACHE);
@@ -204,97 +367,245 @@ window.addEventListener('load', async () => {
     if (!res) return;
     const blob = await res.blob();
     await cache.delete('/pending-image');
-    processBlob(blob);
-  } catch (e) {
-    console.error('[App] Failed to load shared image:', e);
-  }
+    handleBlob(blob);
+  } catch (e) { console.error(e); }
 });
 
-// ── Drop zone ──
-drop.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', e => {
-  if (e.target.files[0]) processBlob(e.target.files[0]);
-});
-drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
-drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-drop.addEventListener('drop', e => {
+/* ── Drop zone ── */
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { if (e.target.files[0]) handleBlob(e.target.files[0]); });
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('over'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'));
+dropzone.addEventListener('drop', e => {
   e.preventDefault();
-  drop.classList.remove('over');
+  dropzone.classList.remove('over');
   const f = e.dataTransfer.files[0];
-  if (f?.type.startsWith('image/')) processBlob(f);
+  if (f?.type.startsWith('image/')) handleBlob(f);
 });
 
-// ── Send to Kindle (Web Share API → X-Plore or any app) ──
-document.getElementById('btn-send').addEventListener('click', async () => {
-  if (!outputBlob) return;
-  const file = new File([outputBlob], 'kindle-wallpaper.png', { type: 'image/png' });
+/* ── Image entry point ── */
+function handleBlob(blob) {
+  originalBlob = blob;
+  if (mode === 'manual') { showCropUI(blob); return; }
 
-  if (navigator.canShare?.({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file], title: 'Kindle Wallpaper' });
-      return;
-    } catch (e) {
-      if (e.name === 'AbortError') return; // user cancelled, do nothing
-    }
-  }
-  // Fallback if Web Share not supported
-  triggerDownload();
-});
-
-// ── Download ──
-document.getElementById('btn-download').addEventListener('click', triggerDownload);
-
-function triggerDownload() {
-  if (!outputBlob) return;
-  const a = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(outputBlob),
-    download: 'kindle-wallpaper.png'
-  });
-  a.click();
-}
-
-// ── Reset ──
-document.getElementById('btn-reset').addEventListener('click', () => {
-  outputBlob = null;
-  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
-  fileInput.value = '';
-  result.style.display = 'none';
-  drop.style.display = '';
-});
-
-// ── Process image ──
-function processBlob(blob) {
   const img = new Image();
   const url = URL.createObjectURL(blob);
-
-  img.onload = () => {
-    URL.revokeObjectURL(url);
-
-    canvas.width = W;
-    canvas.height = H;
-
-    const scale = Math.max(W / img.width, H / img.height);
-    const w = img.width * scale;
-    const h = img.height * scale;
-    const x = (W - w) / 2;
-    const y = (H - h) / 2;
-
-    ctx.filter = 'grayscale(100%)';
-    ctx.drawImage(img, x, y, w, h);
-
-    canvas.toBlob(b => {
-      outputBlob = b;
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-      previewUrl = URL.createObjectURL(b);
-      preview.src = previewUrl;
-      drop.style.display = 'none';
-      result.style.display = 'flex';
-    }, 'image/png');
-  };
-
+  img.onload = () => { URL.revokeObjectURL(url); autoFit(img); };
   img.onerror = () => URL.revokeObjectURL(url);
   img.src = url;
 }
+
+/* ── Auto fit: scale to cover + centre crop ── */
+function autoFit(img) {
+  sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = W; sourceCanvas.height = H;
+  const ctx = sourceCanvas.getContext('2d');
+
+  const scale = Math.max(W / img.width, H / img.height);
+  const w = img.width * scale, h = img.height * scale;
+  ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+
+  setupFilters();
+}
+
+/* ── Manual crop UI ── */
+function showCropUI(blob) {
+  if (cropper) { cropper.destroy(); cropper = null; }
+  if (cropBlobUrl) URL.revokeObjectURL(cropBlobUrl);
+  cropBlobUrl = URL.createObjectURL(blob);
+
+  show('crop');
+
+  // Brief delay: section must be visible before Cropper.js measures the container
+  setTimeout(() => {
+    cropImg.onload = () => {
+      cropper = new Cropper(cropImg, {
+        aspectRatio: W / H,
+        viewMode: 1,           // crop box stays inside image
+        autoCropArea: 0.9,
+        guides: false,
+        center: false,
+        highlight: false,
+        background: false,
+        movable: true,
+        zoomable: true,
+        responsive: true,
+        restore: false,
+        toggleDragModeOnDblclick: false,
+      });
+    };
+    cropImg.src = cropBlobUrl;
+  }, 30);
+}
+
+$('btn-back-crop').addEventListener('click', () => {
+  if (cropper) { cropper.destroy(); cropper = null; }
+  if (cropBlobUrl) { URL.revokeObjectURL(cropBlobUrl); cropBlobUrl = null; }
+  cropImg.src = '';
+  show('drop');
+});
+
+$('btn-confirm-crop').addEventListener('click', () => {
+  if (!cropper) return;
+
+  // getCroppedCanvas respects aspect ratio and scales to W×H
+  const cropped = cropper.getCroppedCanvas({ width: W, height: H, imageSmoothingQuality: 'high' });
+  sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = W; sourceCanvas.height = H;
+  sourceCanvas.getContext('2d').drawImage(cropped, 0, 0);
+
+  cropper.destroy(); cropper = null;
+  if (cropBlobUrl) { URL.revokeObjectURL(cropBlobUrl); cropBlobUrl = null; }
+  cropImg.src = '';
+
+  setupFilters();
+});
+
+/* ── Filter section setup ── */
+function setupFilters() {
+  currentFilter = FILTERS[0].id;
+  buildThumbnails();
+  show('filter');
+  $('btn-recrop').style.display = mode === 'manual' ? '' : 'none';
+  applyFilter();
+}
+
+/* ── Build filter thumbnail strip ── */
+function buildThumbnails() {
+  // Scale source to thumbnail size once
+  const tc = document.createElement('canvas');
+  tc.width = THUMB_W; tc.height = THUMB_H;
+  tc.getContext('2d').drawImage(sourceCanvas, 0, 0, THUMB_W, THUMB_H);
+  const td = tc.getContext('2d').getImageData(0, 0, THUMB_W, THUMB_H);
+
+  filterRow.innerHTML = '';
+
+  FILTERS.forEach(filter => {
+    const thumb = document.createElement('canvas');
+    thumb.width = THUMB_W; thumb.height = THUMB_H;
+    const tCtx = thumb.getContext('2d');
+    const result = tCtx.createImageData(THUMB_W, THUMB_H);
+
+    for (let i = 0; i < td.data.length; i += 4) {
+      const v = Math.max(0, Math.min(255, Math.round(
+        filter.fn(td.data[i], td.data[i + 1], td.data[i + 2])
+      )));
+      result.data[i] = result.data[i + 1] = result.data[i + 2] = v;
+      result.data[i + 3] = 255;
+    }
+    tCtx.putImageData(result, 0, 0);
+
+    const item = document.createElement('div');
+    item.className = 'filter-item' + (filter.id === currentFilter ? ' sel' : '');
+    item.dataset.filter = filter.id;
+
+    const label = document.createElement('span');
+    label.textContent = filter.label;
+
+    item.append(thumb, label);
+    item.addEventListener('click', () => {
+      filterRow.querySelectorAll('.filter-item').forEach(i => i.classList.remove('sel'));
+      item.classList.add('sel');
+      currentFilter = filter.id;
+      applyFilter();
+    });
+
+    filterRow.append(item);
+  });
+}
+
+/* ── Apply selected filter: source colour → greyscale → workCanvas ── */
+function applyFilter() {
+  if (!sourceCanvas) return;
+  const filter = FILTERS.find(f => f.id === currentFilter);
+  const src = sourceCanvas.getContext('2d').getImageData(0, 0, W, H);
+  const out = workCtx.createImageData(W, H);
+
+  for (let i = 0; i < src.data.length; i += 4) {
+    const v = Math.max(0, Math.min(255, Math.round(
+      filter.fn(src.data[i], src.data[i + 1], src.data[i + 2])
+    )));
+    out.data[i] = out.data[i + 1] = out.data[i + 2] = v;
+    out.data[i + 3] = 255;
+  }
+  workCtx.putImageData(out, 0, 0);
+
+  const finish = () => {
+    workCanvas.toBlob(blob => {
+      outputBlob = blob;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = URL.createObjectURL(blob);
+      previewImg.src = previewUrl;
+    }, 'image/png');
+  };
+
+  if (filter.unsharp) {
+    unsharpMask(workCanvas, 0.8).then(finish);
+  } else {
+    finish();
+  }
+}
+
+/* ── Unsharp mask
+ * Uses CSS blur (GPU) to get a blurred version, then:
+ *   sharpened = pixel + amount × (pixel − blurred)
+ */
+async function unsharpMask(canvas, amount) {
+  const { width: w, height: h } = canvas;
+  const ctx = canvas.getContext('2d');
+
+  const blurC = document.createElement('canvas');
+  blurC.width = w; blurC.height = h;
+  const blurCtx = blurC.getContext('2d');
+  blurCtx.filter = 'blur(1.5px)';
+  blurCtx.drawImage(canvas, 0, 0);
+
+  const orig    = ctx.getImageData(0, 0, w, h);
+  const blurred = blurCtx.getImageData(0, 0, w, h);
+
+  for (let i = 0; i < orig.data.length; i += 4) {
+    const v = Math.max(0, Math.min(255,
+      orig.data[i] + amount * (orig.data[i] - blurred.data[i])
+    ));
+    orig.data[i] = orig.data[i + 1] = orig.data[i + 2] = Math.round(v);
+  }
+  ctx.putImageData(orig, 0, 0);
+}
+
+/* ── Send to Kindle via Web Share API → X-Plore or any app ── */
+$('btn-send').addEventListener('click', async () => {
+  if (!outputBlob) return;
+  const file = new File([outputBlob], 'kindle-wallpaper.png', { type: 'image/png' });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Kindle Wallpaper' }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  download();
+});
+
+/* ── Download ── */
+$('btn-dl').addEventListener('click', download);
+function download() {
+  if (!outputBlob) return;
+  Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(outputBlob),
+    download: 'kindle-wallpaper.png'
+  }).click();
+}
+
+/* ── Re-crop (manual mode only) ── */
+$('btn-recrop').addEventListener('click', () => {
+  if (originalBlob) showCropUI(originalBlob);
+});
+
+/* ── Reset ── */
+$('btn-reset').addEventListener('click', () => {
+  sourceCanvas = null; outputBlob = null; originalBlob = null;
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  fileInput.value = '';
+  currentFilter = FILTERS[0].id;
+  show('drop');
+});
 </script>
 </body>
 </html>
