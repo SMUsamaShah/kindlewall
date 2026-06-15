@@ -1,13 +1,42 @@
+const CACHE   = 'kw-v2'; // bumped from v1 — clears old cache on update
 const PENDING = 'kw-pending-v1';
 
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+const PRECACHE = [
+  './',
+  './manifest.json',
+  './icon.svg',
+  'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css',
+  'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js',
+];
+
+self.addEventListener('install', event => {
+  self.skipWaiting();
+  event.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE)));
+});
+
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys()
+      .then(keys => keys.filter(k => k !== CACHE && k !== PENDING))
+      .then(old  => Promise.all(old.map(k => caches.delete(k))))
+      .then(()   => self.clients.claim())
+  );
+});
 
 self.addEventListener('fetch', event => {
-  if (event.request.method !== 'POST') return;
-  const url = new URL(event.request.url);
-  if (!url.pathname.endsWith('/share-target')) return;
-  event.respondWith(handleShare(event.request, url));
+  // Share target: store file in cache, redirect to app
+  if (event.request.method === 'POST') {
+    const url = new URL(event.request.url);
+    if (url.pathname.endsWith('/share-target')) {
+      event.respondWith(handleShare(event.request, url));
+    }
+    return;
+  }
+
+  // Cache-first for everything else (makes app work offline)
+  event.respondWith(
+    caches.match(event.request).then(cached => cached || fetch(event.request))
+  );
 });
 
 async function handleShare(request, url) {
@@ -24,7 +53,6 @@ async function handleShare(request, url) {
     console.error('[SW] Share handler error:', err);
   }
 
-  // Works for both root hosting and sub-path (e.g. GitHub Pages)
   const base = url.pathname.replace(/\/share-target$/, '/');
   return Response.redirect(url.origin + base + '?shared=1', 303);
 }
