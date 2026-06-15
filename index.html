@@ -50,7 +50,6 @@
     }
     .section.active { display: flex; }
 
-    /* ── Mode tabs ── */
     .tabs {
       display: flex;
       background: var(--surface);
@@ -76,7 +75,6 @@
       box-shadow: 0 1px 3px rgba(0,0,0,.5);
     }
 
-    /* ── Drop zone ── */
     #dropzone {
       width: 100%;
       border: 1px dashed var(--border);
@@ -98,12 +96,7 @@
       letter-spacing: 0.05em;
     }
 
-    /* ── Crop section ── */
-    .hint {
-      font-size: 11px;
-      color: var(--muted);
-      letter-spacing: 0.02em;
-    }
+    .hint { font-size: 11px; color: var(--muted); letter-spacing: 0.02em; }
     .crop-wrap {
       width: 100%;
       height: 62dvh;
@@ -113,7 +106,6 @@
     }
     #crop-img { display: block; max-width: 100%; }
 
-    /* ── Kindle device mockup ── */
     .device {
       background: #1d1d1d;
       border-radius: 14px;
@@ -140,7 +132,6 @@
     }
     .screen img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-    /* ── Filter row ── */
     .filter-row {
       display: flex;
       gap: 10px;
@@ -151,7 +142,6 @@
       -webkit-overflow-scrolling: touch;
     }
     .filter-row::-webkit-scrollbar { display: none; }
-
     .filter-item {
       display: flex;
       flex-direction: column;
@@ -176,8 +166,7 @@
     }
     .filter-item.sel span { color: var(--accent); }
 
-    /* ── Buttons ── */
-    .btn-row  { display: flex; gap: 10px; }
+    .btn-row   { display: flex; gap: 10px; }
     .ghost-row { display: flex; gap: 16px; }
 
     button {
@@ -202,7 +191,6 @@
 
 <header>Kindle Wallpaper</header>
 
-<!-- Step 1: Drop + mode select -->
 <div id="sec-drop" class="section active">
   <div class="tabs">
     <button class="tab active" data-mode="auto">Auto Fit</button>
@@ -214,7 +202,6 @@
   </div>
 </div>
 
-<!-- Step 2: Manual crop -->
 <div id="sec-crop" class="section">
   <p class="hint">Drag to move · Pinch to zoom</p>
   <div class="crop-wrap">
@@ -226,7 +213,6 @@
   </div>
 </div>
 
-<!-- Step 3: Filter + preview -->
 <div id="sec-filter" class="section">
   <div class="device">
     <div class="screen">
@@ -252,15 +238,49 @@
 /* ── Constants ── */
 const W = 1072, H = 1448;
 const PENDING_CACHE = 'kw-pending-v1';
-const THUMB_W = 36, THUMB_H = 49; // 36 × (36 * H/W) ≈ 49
+const THUMB_W = 36, THUMB_H = 49;
 
-/* ── Filters
+/* ── Screen filter: sigmoid LUT (k=8)
  *
- * Each fn(r,g,b) returns a greyscale value 0-255.
- * All use luminosity-weighted greyscale as base except Portrait and Landscape
- * which use different channel mixes for different aesthetic effects.
+ * Analysis of original Amazon Kindle screensaver photography (Bruce Ashley, 2011):
+ * These images were shot specifically for 16-greylevel e-ink. Their histogram is
+ * bimodal — 27% of inputs map to near-black (0–30), 27% to near-white (225–255),
+ * with only ~10% in true mid-grey. A logistic sigmoid with k=8 reproduces this.
  *
- * Kindle filter also gets an unsharp mask pass (GPU-blurred blur → subtract).
+ * The "Screen" filter mimics this using three passes:
+ *   1. Clarity (large-radius unsharp, 20px) — boosts texture-level local contrast
+ *      on the greyscale image BEFORE the tone curve, making bark/grass/stone
+ *      readable on e-ink's limited grey steps.
+ *   2. Sigmoid tone curve — creates the bimodal distribution (darks → black,
+ *      lights → white, steep mid-transition).
+ *   3. Fine unsharp mask (1.5px) — crisps edges after the curve.
+ */
+const SCREEN_LUT = (() => {
+  const lut = new Uint8Array(256);
+  const k = 8, mid = 0.5;
+  const lo  = 1 / (1 + Math.exp(-k * (0   - mid)));
+  const hi  = 1 / (1 + Math.exp(-k * (1   - mid)));
+  const rng = hi - lo;
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255;
+    const s = 1 / (1 + Math.exp(-k * (x - mid)));
+    lut[i] = Math.round(((s - lo) / rng) * 255);
+  }
+  return lut;
+})();
+
+/* ── Filters ──
+ *
+ * Standard filters: { id, label, fn(r,g,b)→0–255 }
+ *   fn converts colour to final greyscale value in one step.
+ *
+ * Screen filter uses a two-stage approach:
+ *   toGrey(r,g,b)→0–255  — greyscale only, no tone curve
+ *   clarity: { radius, amount }  — large-radius unsharp BEFORE curve
+ *   lut: Uint8Array  — tone curve applied after clarity
+ *   unsharp / unsharpAmount  — fine sharpening AFTER curve
+ *
+ * Thumbnails: toGrey + lut applied inline (clarity skipped at thumb size).
  */
 const FILTERS = [
   {
@@ -269,7 +289,7 @@ const FILTERS = [
   },
   {
     id: 'vivid', label: 'Vivid',
-    // S-curve: darkens shadows, brightens highlights — punchier contrast
+    // S-curve: darkens shadows, brightens highlights
     fn: (r, g, b) => {
       const v = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
       const s = v < 0.5 ? 2*v*v : 1 - 2*(1-v)*(1-v);
@@ -278,38 +298,47 @@ const FILTERS = [
   },
   {
     id: 'deep', label: 'Deep',
-    // Clips input below 25 and stretches remainder to 0-255 — deep blacks
+    // Clips shadows below 25, stretches remainder — deep blacks
     fn: (r, g, b) => Math.max(0, Math.min(255,
       (0.2126*r + 0.7152*g + 0.0722*b - 25) * (255 / 210)
     ))
   },
   {
     id: 'bright', label: 'Bright',
-    // Gamma < 1 lifts shadows without blowing highlights — good for dark photos
+    // Gamma < 1 lifts shadows without blowing highlights
     fn: (r, g, b) => Math.pow((0.2126*r + 0.7152*g + 0.0722*b) / 255, 0.65) * 255
   },
   {
     id: 'portrait', label: 'Portrait',
-    // Green-heavy channel mix + compressed range → smooth, flattering skin tones
+    // Green-heavy + compressed range → smooth, flattering skin tones
     fn: (r, g, b) => 20 + (0.15*r + 0.72*g + 0.13*b) / 255 * 215
   },
   {
     id: 'landscape', label: 'Landscape',
-    // Red-heavy (infrared-ish) → dark skies, bright foliage — dramatic outdoors
+    // Red-heavy (infrared-ish) → dark skies, bright warm areas
     fn: (r, g, b) => Math.max(0, Math.min(255,
       (0.55*r + 0.33*g + 0.12*b - 10) * (255 / 230)
     ))
   },
   {
-    id: 'kindle', label: 'Kindle', unsharp: true,
-    // Strong S-curve + level stretch + unsharp mask → optimised for e-ink clarity
+    id: 'kindle', label: 'Kindle', unsharp: true, unsharpAmount: 0.8,
+    // Strong S-curve + level stretch + edge sharpening — e-ink optimised
     fn: (r, g, b) => {
-      const v = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
+      const v    = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
       const base = v < 0.5 ? 2*v*v : 1 - 2*(1-v)*(1-v);
-      // Blend beyond full S-curve for extra punch (strength 1.5)
-      const s = Math.max(0, Math.min(1, v + 1.5 * (base - v)));
-      return Math.max(0, Math.min(255, (s * 255 - 15) * (255 / 225)));
+      const s    = Math.max(0, Math.min(1, v + 1.5*(base - v)));
+      return Math.max(0, Math.min(255, (s*255 - 15) * (255/225)));
     }
+  },
+  {
+    id: 'screen', label: 'Screen',
+    // Mimics original Amazon Kindle screensaver photography:
+    //   clarity (20px) → sigmoid curve → fine sharpen
+    toGrey:        (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b,
+    lut:           SCREEN_LUT,
+    clarity:       { radius: '20px', amount: 0.5 },
+    unsharp:       true,
+    unsharpAmount: 0.5,
   }
 ];
 
@@ -356,7 +385,7 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(console.error);
 }
 
-/* ── Handle image shared via share target ── */
+/* ── Shared image ── */
 window.addEventListener('load', async () => {
   if (new URLSearchParams(location.search).get('shared') !== '1') return;
   history.replaceState(null, '', location.pathname);
@@ -383,11 +412,10 @@ dropzone.addEventListener('drop', e => {
   if (f?.type.startsWith('image/')) handleBlob(f);
 });
 
-/* ── Image entry point ── */
+/* ── Image entry ── */
 function handleBlob(blob) {
   originalBlob = blob;
   if (mode === 'manual') { showCropUI(blob); return; }
-
   const img = new Image();
   const url = URL.createObjectURL(blob);
   img.onload = () => { URL.revokeObjectURL(url); autoFit(img); };
@@ -395,33 +423,28 @@ function handleBlob(blob) {
   img.src = url;
 }
 
-/* ── Auto fit: scale to cover + centre crop ── */
+/* ── Auto fit ── */
 function autoFit(img) {
   sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = W; sourceCanvas.height = H;
   const ctx = sourceCanvas.getContext('2d');
-
   const scale = Math.max(W / img.width, H / img.height);
   const w = img.width * scale, h = img.height * scale;
-  ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
-
+  ctx.drawImage(img, (W-w)/2, (H-h)/2, w, h);
   setupFilters();
 }
 
-/* ── Manual crop UI ── */
+/* ── Manual crop ── */
 function showCropUI(blob) {
   if (cropper) { cropper.destroy(); cropper = null; }
   if (cropBlobUrl) URL.revokeObjectURL(cropBlobUrl);
   cropBlobUrl = URL.createObjectURL(blob);
-
   show('crop');
-
-  // Brief delay: section must be visible before Cropper.js measures the container
   setTimeout(() => {
     cropImg.onload = () => {
       cropper = new Cropper(cropImg, {
         aspectRatio: W / H,
-        viewMode: 1,           // crop box stays inside image
+        viewMode: 1,
         autoCropArea: 0.9,
         guides: false,
         center: false,
@@ -447,21 +470,17 @@ $('btn-back-crop').addEventListener('click', () => {
 
 $('btn-confirm-crop').addEventListener('click', () => {
   if (!cropper) return;
-
-  // getCroppedCanvas respects aspect ratio and scales to W×H
   const cropped = cropper.getCroppedCanvas({ width: W, height: H, imageSmoothingQuality: 'high' });
   sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = W; sourceCanvas.height = H;
   sourceCanvas.getContext('2d').drawImage(cropped, 0, 0);
-
   cropper.destroy(); cropper = null;
   if (cropBlobUrl) { URL.revokeObjectURL(cropBlobUrl); cropBlobUrl = null; }
   cropImg.src = '';
-
   setupFilters();
 });
 
-/* ── Filter section setup ── */
+/* ── Filter section ── */
 function setupFilters() {
   currentFilter = FILTERS[0].id;
   buildThumbnails();
@@ -470,38 +489,33 @@ function setupFilters() {
   applyFilter();
 }
 
-/* ── Build filter thumbnail strip ── */
 function buildThumbnails() {
-  // Scale source to thumbnail size once
   const tc = document.createElement('canvas');
   tc.width = THUMB_W; tc.height = THUMB_H;
   tc.getContext('2d').drawImage(sourceCanvas, 0, 0, THUMB_W, THUMB_H);
   const td = tc.getContext('2d').getImageData(0, 0, THUMB_W, THUMB_H);
 
   filterRow.innerHTML = '';
-
   FILTERS.forEach(filter => {
     const thumb = document.createElement('canvas');
     thumb.width = THUMB_W; thumb.height = THUMB_H;
-    const tCtx = thumb.getContext('2d');
+    const tCtx   = thumb.getContext('2d');
     const result = tCtx.createImageData(THUMB_W, THUMB_H);
+    const greyFn = filter.toGrey || filter.fn;
 
     for (let i = 0; i < td.data.length; i += 4) {
-      const v = Math.max(0, Math.min(255, Math.round(
-        filter.fn(td.data[i], td.data[i + 1], td.data[i + 2])
-      )));
-      result.data[i] = result.data[i + 1] = result.data[i + 2] = v;
-      result.data[i + 3] = 255;
+      let v = Math.max(0, Math.min(255, Math.round(greyFn(td.data[i], td.data[i+1], td.data[i+2]))));
+      if (filter.lut) v = filter.lut[v]; // apply tone curve for thumbnail preview
+      result.data[i] = result.data[i+1] = result.data[i+2] = v;
+      result.data[i+3] = 255;
     }
     tCtx.putImageData(result, 0, 0);
 
-    const item = document.createElement('div');
+    const item  = document.createElement('div');
+    const label = document.createElement('span');
     item.className = 'filter-item' + (filter.id === currentFilter ? ' sel' : '');
     item.dataset.filter = filter.id;
-
-    const label = document.createElement('span');
     label.textContent = filter.label;
-
     item.append(thumb, label);
     item.addEventListener('click', () => {
       filterRow.querySelectorAll('.filter-item').forEach(i => i.classList.remove('sel'));
@@ -509,24 +523,27 @@ function buildThumbnails() {
       currentFilter = filter.id;
       applyFilter();
     });
-
     filterRow.append(item);
   });
 }
 
-/* ── Apply selected filter: source colour → greyscale → workCanvas ── */
+/* ── Apply filter ──
+ *
+ * Standard filter:  fn() → putImageData → [unsharp]
+ * Screen filter:    toGrey() → putImageData → clarity → lut → unsharp
+ */
 function applyFilter() {
   if (!sourceCanvas) return;
   const filter = FILTERS.find(f => f.id === currentFilter);
-  const src = sourceCanvas.getContext('2d').getImageData(0, 0, W, H);
-  const out = workCtx.createImageData(W, H);
+  const src    = sourceCanvas.getContext('2d').getImageData(0, 0, W, H);
+  const out    = workCtx.createImageData(W, H);
+  const greyFn = filter.toGrey || filter.fn;
 
+  // Step 1: Greyscale conversion
   for (let i = 0; i < src.data.length; i += 4) {
-    const v = Math.max(0, Math.min(255, Math.round(
-      filter.fn(src.data[i], src.data[i + 1], src.data[i + 2])
-    )));
-    out.data[i] = out.data[i + 1] = out.data[i + 2] = v;
-    out.data[i + 3] = 255;
+    const v = Math.max(0, Math.min(255, Math.round(greyFn(src.data[i], src.data[i+1], src.data[i+2]))));
+    out.data[i] = out.data[i+1] = out.data[i+2] = v;
+    out.data[i+3] = 255;
   }
   workCtx.putImageData(out, 0, 0);
 
@@ -539,40 +556,55 @@ function applyFilter() {
     }, 'image/png');
   };
 
-  if (filter.unsharp) {
-    unsharpMask(workCanvas, 0.8).then(finish);
-  } else {
-    finish();
+  const steps = [];
+
+  // Step 2: Clarity (large-radius, pre-curve texture enhancement)
+  if (filter.clarity) {
+    steps.push(() => unsharpMask(workCanvas, filter.clarity.amount, filter.clarity.radius));
   }
+
+  // Step 3: Tone curve LUT
+  if (filter.lut) {
+    steps.push(() => {
+      const d = workCtx.getImageData(0, 0, W, H);
+      for (let i = 0; i < d.data.length; i += 4) {
+        const v = filter.lut[d.data[i]];
+        d.data[i] = d.data[i+1] = d.data[i+2] = v;
+      }
+      workCtx.putImageData(d, 0, 0);
+    });
+  }
+
+  // Step 4: Fine sharpening
+  if (filter.unsharp) {
+    steps.push(() => unsharpMask(workCanvas, filter.unsharpAmount || 0.8, '1.5px'));
+  }
+
+  // Run steps in sequence, then finish
+  steps.reduce((p, fn) => p.then(fn), Promise.resolve()).then(finish);
 }
 
-/* ── Unsharp mask
- * Uses CSS blur (GPU) to get a blurred version, then:
- *   sharpened = pixel + amount × (pixel − blurred)
+/* ── Unsharp mask — GPU blur (CSS filter) + per-pixel subtract ──
+ * radius: CSS blur value, e.g. '1.5px' (fine sharpen) or '20px' (clarity)
  */
-async function unsharpMask(canvas, amount) {
+async function unsharpMask(canvas, amount, radius = '1.5px') {
   const { width: w, height: h } = canvas;
-  const ctx = canvas.getContext('2d');
-
+  const ctx   = canvas.getContext('2d');
   const blurC = document.createElement('canvas');
   blurC.width = w; blurC.height = h;
-  const blurCtx = blurC.getContext('2d');
-  blurCtx.filter = 'blur(1.5px)';
-  blurCtx.drawImage(canvas, 0, 0);
-
+  const bCtx  = blurC.getContext('2d');
+  bCtx.filter = `blur(${radius})`;
+  bCtx.drawImage(canvas, 0, 0);
   const orig    = ctx.getImageData(0, 0, w, h);
-  const blurred = blurCtx.getImageData(0, 0, w, h);
-
+  const blurred = bCtx.getImageData(0, 0, w, h);
   for (let i = 0; i < orig.data.length; i += 4) {
-    const v = Math.max(0, Math.min(255,
-      orig.data[i] + amount * (orig.data[i] - blurred.data[i])
-    ));
-    orig.data[i] = orig.data[i + 1] = orig.data[i + 2] = Math.round(v);
+    const v = Math.max(0, Math.min(255, orig.data[i] + amount * (orig.data[i] - blurred.data[i])));
+    orig.data[i] = orig.data[i+1] = orig.data[i+2] = Math.round(v);
   }
   ctx.putImageData(orig, 0, 0);
 }
 
-/* ── Send to Kindle via Web Share API → X-Plore or any app ── */
+/* ── Send to Kindle ── */
 $('btn-send').addEventListener('click', async () => {
   if (!outputBlob) return;
   const file = new File([outputBlob], 'kindle-wallpaper.png', { type: 'image/png' });
@@ -583,7 +615,6 @@ $('btn-send').addEventListener('click', async () => {
   download();
 });
 
-/* ── Download ── */
 $('btn-dl').addEventListener('click', download);
 function download() {
   if (!outputBlob) return;
@@ -593,12 +624,8 @@ function download() {
   }).click();
 }
 
-/* ── Re-crop (manual mode only) ── */
-$('btn-recrop').addEventListener('click', () => {
-  if (originalBlob) showCropUI(originalBlob);
-});
+$('btn-recrop').addEventListener('click', () => { if (originalBlob) showCropUI(originalBlob); });
 
-/* ── Reset ── */
 $('btn-reset').addEventListener('click', () => {
   sourceCanvas = null; outputBlob = null; originalBlob = null;
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
