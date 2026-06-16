@@ -29,7 +29,7 @@ step — no greyscale applied yet.
 ## Greyscale Filters
 
 All filters operate per-pixel on the full-colour source canvas via `fn(r,g,b) → 0–255`.
-The Kindle filter additionally runs an unsharp mask pass.
+Some filters use multi-stage pipelines (see Screen).
 
 | Filter    | Technique |
 |-----------|-----------|
@@ -40,16 +40,47 @@ The Kindle filter additionally runs an unsharp mask pass.
 | Portrait  | Green-heavy channel mix + compressed output range (20–235) |
 | Landscape | Red-heavy channel mix (0.55R 0.33G 0.12B) → dramatic skies |
 | Kindle    | Luminosity → strong S-curve (strength 1.5) → level stretch → unsharp mask |
+| Screen    | See below |
 
-### Unsharp Mask (Kindle filter only)
-Uses GPU-accelerated CSS `blur(1.5px)` on an offscreen canvas, then:
-`sharpened = pixel + 0.8 × (pixel − blurred)` applied per-pixel.
-Significantly improves edge clarity on e-ink without a slow JS convolution loop.
+### Screen filter — based on pixel analysis of 5 original Kindle screensaver images
+
+Measured histogram of Bruce Ashley's 2011 Amazon screensaver photography:
+
+| Zone | Range | % of pixels | Notes |
+|------|-------|-------------|-------|
+| Pure black | 0–15 | 28–45% | Deep inter-object shadows + dark backgrounds |
+| Deep shadow | 16–63 | 9–16% | |
+| Mid-grey | 64–191 | 26–40% | **Texture lives here — NOT crushed** |
+| Highlight | 192–239 | 6–17% | |
+| Pure white | 240–255 | 7–20% | Hard-clipped metallic highlights |
+
+Local contrast: 57–76% of pixels have local_std > 40 (11px window). Gradient p90 = 77–112.
+
+**Key finding:** The huge black regions come from subject matter and lighting, not from a sigmoid
+crushing midtones. Initial k=8 sigmoid was wrong — it depopulated midtones that the real
+images preserve. See [failures.md](failures.md).
+
+**Pipeline:** `toGrey → clarity 25px → clarity 5px → level LUT → sharpen 1.5px`
+
+- **Clarity 25px (0.5):** Macro-level local contrast — exaggerates shadows between objects
+- **Clarity 5px (0.4):** Fine texture pop — grain, scratches, metal pitting
+- **Level LUT:** Black point 20→0, white point 230→255, gentle S-curve (k=4) blended 60/40 with linear to add snap without crushing texture
+- **Sharpen 1.5px (1.0):** Hard edge sharpening matched to measured gradient values
+
+### Unsharp mask (shared utility)
+Uses GPU-accelerated CSS `blur(Npx)` on an offscreen canvas, then:
+`sharpened = pixel + amount × (pixel − blurred)` applied per-pixel.
+Used for both clarity passes (large radius) and final sharpening (small radius).
+
+### clarityPasses (filter property)
+Array of `{radius, amount}` objects run sequentially before the LUT.
+Replaces old single `clarity: {}` property. applyFilter supports both for compatibility.
 
 ## Filter Thumbnails
 On entering the filter step, source canvas is scaled to 36×49 px once.
-Each filter's `fn` is applied to that thumbnail — gives live previews of all
-7 filters instantly before touching the full 1072×1448 canvas.
+Each filter's `fn` (or `toGrey + lut`) is applied to that thumbnail — gives live previews of all
+8 filters instantly before touching the full 1072×1448 canvas.
+Clarity passes are skipped in thumbnails (too small to matter).
 
 ## Share Flows
 
