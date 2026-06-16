@@ -1,17 +1,17 @@
-const CACHE   = 'kw-v2'; // bumped from v1 — clears old cache on update
+const CACHE   = 'kw-v2';
 const PENDING = 'kw-pending-v1';
 
-const PRECACHE = [
-  './',
-  './manifest.json',
-  './icon.svg',
+// Only CDN resources are precached — immutable versioned URLs, safe to cache forever.
+// Own-origin files (index.html, manifest.json etc) use network-first so updates
+// are picked up immediately without bumping a cache version constant.
+const CDN_PRECACHE = [
   'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css',
   'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js',
 ];
 
 self.addEventListener('install', event => {
   self.skipWaiting();
-  event.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE)));
+  event.waitUntil(caches.open(CACHE).then(c => c.addAll(CDN_PRECACHE)));
 });
 
 self.addEventListener('activate', event => {
@@ -24,7 +24,7 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
-  // Share target: store file in cache, redirect to app
+  // Share target POST — intercept, store file, redirect
   if (event.request.method === 'POST') {
     const url = new URL(event.request.url);
     if (url.pathname.endsWith('/share-target')) {
@@ -33,9 +33,27 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Cache-first for everything else (makes app work offline)
+  const url = new URL(event.request.url);
+
+  // CDN resources: cache-first (versioned URLs, never change)
+  if (url.hostname !== self.location.hostname) {
+    event.respondWith(
+      caches.match(event.request).then(cached => cached || fetch(event.request))
+    );
+    return;
+  }
+
+  // Own origin: network-first, cache as offline fallback.
+  // Any push to GitHub is picked up on the next page load without reinstalling the PWA.
   event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request))
+    fetch(event.request)
+      .then(response => {
+        if (response.ok) {
+          caches.open(CACHE).then(c => c.put(event.request, response.clone()));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
 
