@@ -293,7 +293,46 @@ const SCREEN_LUT = (() => {
  *
  * Thumbnails: toGrey + lut applied inline (clarity skipped at thumb size).
  */
+// Shared pipeline config for all Screen variants.
+// Defined once here; each variant only differs in toGrey.
+const SCREEN_PIPELINE = {
+  lut: SCREEN_LUT,
+  clarityPasses: [
+    { radius: '25px', amount: 0.5 }, // macro: pushes inter-object shadows toward black
+    { radius: '5px',  amount: 0.4 }, // micro: fine grain/scratch/texture pop
+  ],
+  unsharp: true,
+  unsharpAmount: 1.0,
+};
+
 const FILTERS = [
+  {
+    // Luminosity mix. Best all-round starting point.
+    id: 'screen', label: 'Screen',
+    toGrey: (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b,
+    ...SCREEN_PIPELINE,
+  },
+  {
+    // Red channel only. Brightens warm tones/skin, darkens blues and greens.
+    // Good for portraits and sunlit scenes.
+    id: 'screen-r', label: 'Screen R',
+    toGrey: (r) => r,
+    ...SCREEN_PIPELINE,
+  },
+  {
+    // Green channel only. Closest to luminosity; emphasises foliage and mid-tones.
+    // Tends to produce smooth, even results with good shadow detail.
+    id: 'screen-g', label: 'Screen G',
+    toGrey: (r, g) => g,
+    ...SCREEN_PIPELINE,
+  },
+  {
+    // Blue channel only. Darkens warm tones, brightens skies and cool highlights.
+    // Dramatic on architecture, water, and night scenes.
+    id: 'screen-b', label: 'Screen B',
+    toGrey: (r, g, b) => b,
+    ...SCREEN_PIPELINE,
+  },
   {
     id: 'natural', label: 'Natural',
     fn: (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b
@@ -341,20 +380,6 @@ const FILTERS = [
       return Math.max(0, Math.min(255, (s*255 - 15) * (255/225)));
     }
   },
-  {
-    id: 'screen', label: 'Screen',
-    // Mimics original Amazon Kindle screensaver photography (Bruce Ashley, 2011).
-    // Dual clarity: macro shadows (25px) + fine grain (5px) → level LUT → hard sharpen.
-    // See SCREEN_LUT comment for full analysis and rationale.
-    toGrey: (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b,
-    lut:    SCREEN_LUT,
-    clarityPasses: [
-      { radius: '25px', amount: 0.5 }, // macro: pushes inter-object shadows toward black
-      { radius: '5px',  amount: 0.4 }, // micro: fine grain/scratch/texture pop
-    ],
-    unsharp:       true,
-    unsharpAmount: 1.0, // harder than other filters: measured gradient p90 = 77–112
-  }
 ];
 
 /* ── State ── */
@@ -411,7 +436,9 @@ window.addEventListener('load', async () => {
     if (!res) return;
     const blob = await res.blob();
     await cache.delete('/pending-image');
-    handleBlob(blob);
+    // Shared images always go to crop first — framing is unknown when sharing from another app
+    originalBlob = blob;
+    showCropUI(blob);
   } catch (e) { console.error(e); }
 });
 
@@ -470,6 +497,7 @@ function showCropUI(blob) {
         responsive: true,
         restore: false,
         toggleDragModeOnDblclick: false,
+        cropBoxResizable: false,  // fixed size — drag to reposition, pinch to zoom image
       });
     };
     cropImg.src = cropBlobUrl;
@@ -500,7 +528,7 @@ function setupFilters() {
   currentFilter = FILTERS[0].id;
   buildThumbnails();
   show('filter');
-  $('btn-recrop').style.display = mode === 'manual' ? '' : 'none';
+  $('btn-recrop').style.display = ''; // always available
   applyFilter();
 }
 
