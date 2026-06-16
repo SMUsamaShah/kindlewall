@@ -203,7 +203,8 @@
 </div>
 
 <div id="sec-crop" class="section">
-  <p class="hint">Drag to move · Pinch to zoom</p>
+  <p class="hint">Box is 1072×1448 px — drag to reposition · pinch to zoom image</p>
+  <p id="crop-warn" style="font-size:11px;color:#c07040;text-align:center;min-height:1em"></p>
   <div class="crop-wrap">
     <img id="crop-img" alt="">
   </div>
@@ -481,13 +482,19 @@ function showCropUI(blob) {
   if (cropper) { cropper.destroy(); cropper = null; }
   if (cropBlobUrl) URL.revokeObjectURL(cropBlobUrl);
   cropBlobUrl = URL.createObjectURL(blob);
+  $('crop-warn').textContent = '';
   show('crop');
   setTimeout(() => {
     cropImg.onload = () => {
+      const nw = cropImg.naturalWidth, nh = cropImg.naturalHeight;
+      if (nw < W || nh < H) {
+        $('crop-warn').textContent =
+          `⚠ Image (\${nw}×\${nh}) is smaller than \${W}×\${H} — output will be upscaled`;
+      }
       cropper = new Cropper(cropImg, {
         aspectRatio: W / H,
         viewMode: 1,
-        autoCropArea: 0.9,
+        dragMode: 'move',       // dragging canvas pans image; drag crop box to reposition it
         guides: false,
         center: false,
         highlight: false,
@@ -497,7 +504,17 @@ function showCropUI(blob) {
         responsive: true,
         restore: false,
         toggleDragModeOnDblclick: false,
-        cropBoxResizable: false,  // fixed size — drag to reposition, pinch to zoom image
+        cropBoxResizable: false,
+        ready() {
+          // Set crop box to exactly W×H natural image pixels, centred.
+          // No autoCropArea fraction — we need a real pixel count.
+          cropper.setData({
+            x: Math.max(0, Math.round((nw - W) / 2)),
+            y: Math.max(0, Math.round((nh - H) / 2)),
+            width:  Math.min(W, nw),
+            height: Math.min(H, nh),
+          });
+        },
       });
     };
     cropImg.src = cropBlobUrl;
@@ -513,10 +530,17 @@ $('btn-back-crop').addEventListener('click', () => {
 
 $('btn-confirm-crop').addEventListener('click', () => {
   if (!cropper) return;
-  const cropped = cropper.getCroppedCanvas({ width: W, height: H, imageSmoothingQuality: 'high' });
+  const data = cropper.getData(true); // natural image pixel coords, rounded
   sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = W; sourceCanvas.height = H;
-  sourceCanvas.getContext('2d').drawImage(cropped, 0, 0);
+  // drawImage with sx/sy/sw/sh in natural pixels, dw/dh = W/H.
+  // When data.width === W and data.height === H: pure 1:1 copy, zero resize.
+  // Only scales if image was smaller than W/H (warned at crop UI entry).
+  sourceCanvas.getContext('2d').drawImage(
+    cropImg,
+    data.x, data.y, data.width, data.height,
+    0, 0, W, H
+  );
   cropper.destroy(); cropper = null;
   if (cropBlobUrl) { URL.revokeObjectURL(cropBlobUrl); cropBlobUrl = null; }
   cropImg.src = '';
