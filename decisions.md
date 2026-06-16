@@ -50,3 +50,12 @@ real images' hard black/white clips) without touching the mid range. See failure
 **Decision:** `SCREEN_PIPELINE` const spread into each Screen variant.
 **Reason:** Single source of truth for clarity pass radii and unsharp amount.
 Changing one value updates all four Screen variants.
+
+## ADR-009 — Network-first for own-origin; cache-first for CDN
+**Decision:** `sw.js` fetch handler uses network-first for `self.location.hostname`
+files, cache-first only for CDN (Cropper.js).
+**Reason:** Cache-first for own-origin meant pushing a new `index.html` to GitHub
+had no effect on installed PWA users. The browser only reinstalls the SW when
+`sw.js` changes byte-for-byte; if only `index.html` changed, the old cached copy
+was served indefinitely. CDN resources use versioned URLs and never change, so
+cache-first is safe and faster there.
