@@ -334,53 +334,6 @@ const FILTERS = [
     toGrey: (r, g, b) => b,
     ...SCREEN_PIPELINE,
   },
-  {
-    id: 'natural', label: 'Natural',
-    fn: (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b
-  },
-  {
-    id: 'vivid', label: 'Vivid',
-    // S-curve: darkens shadows, brightens highlights
-    fn: (r, g, b) => {
-      const v = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
-      const s = v < 0.5 ? 2*v*v : 1 - 2*(1-v)*(1-v);
-      return s * 255;
-    }
-  },
-  {
-    id: 'deep', label: 'Deep',
-    // Clips shadows below 25, stretches remainder — deep blacks
-    fn: (r, g, b) => Math.max(0, Math.min(255,
-      (0.2126*r + 0.7152*g + 0.0722*b - 25) * (255 / 210)
-    ))
-  },
-  {
-    id: 'bright', label: 'Bright',
-    // Gamma < 1 lifts shadows without blowing highlights
-    fn: (r, g, b) => Math.pow((0.2126*r + 0.7152*g + 0.0722*b) / 255, 0.65) * 255
-  },
-  {
-    id: 'portrait', label: 'Portrait',
-    // Green-heavy + compressed range → smooth, flattering skin tones
-    fn: (r, g, b) => 20 + (0.15*r + 0.72*g + 0.13*b) / 255 * 215
-  },
-  {
-    id: 'landscape', label: 'Landscape',
-    // Red-heavy (infrared-ish) → dark skies, bright warm areas
-    fn: (r, g, b) => Math.max(0, Math.min(255,
-      (0.55*r + 0.33*g + 0.12*b - 10) * (255 / 230)
-    ))
-  },
-  {
-    id: 'kindle', label: 'Kindle', unsharp: true, unsharpAmount: 0.8,
-    // Strong S-curve + level stretch + edge sharpening — e-ink optimised
-    fn: (r, g, b) => {
-      const v    = (0.2126*r + 0.7152*g + 0.0722*b) / 255;
-      const base = v < 0.5 ? 2*v*v : 1 - 2*(1-v)*(1-v);
-      const s    = Math.max(0, Math.min(1, v + 1.5*(base - v)));
-      return Math.max(0, Math.min(255, (s*255 - 15) * (255/225)));
-    }
-  },
 ];
 
 /* ── State ── */
@@ -620,7 +573,7 @@ function applyFilter() {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       previewUrl = URL.createObjectURL(blob);
       previewImg.src = previewUrl;
-    }, 'image/png');
+    }, 'image/jpeg', 0.92);
   };
 
   const steps = [];
@@ -676,7 +629,7 @@ async function unsharpMask(canvas, amount, radius = '1.5px') {
 /* ── Send to Kindle ── */
 $('btn-send').addEventListener('click', async () => {
   if (!outputBlob) return;
-  const file = new File([outputBlob], 'kindle-wallpaper.png', { type: 'image/png' });
+  const file = new File([outputBlob], 'kindle-wallpaper.jpg', { type: 'image/jpeg' });
   if (navigator.canShare?.({ files: [file] })) {
     try { await navigator.share({ files: [file], title: 'Kindle Wallpaper' }); return; }
     catch (e) { if (e.name === 'AbortError') return; }
@@ -689,7 +642,7 @@ function download() {
   if (!outputBlob) return;
   Object.assign(document.createElement('a'), {
     href: URL.createObjectURL(outputBlob),
-    download: 'kindle-wallpaper.png'
+    download: 'kindle-wallpaper.jpg'
   }).click();
 }
 
