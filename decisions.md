@@ -149,3 +149,26 @@ Monotonic CDFs → O(256) LUT build via single forward pointer, no per-pixel all
 on uniform, real-reference, and flat-midtone gaussian inputs: all land within ~0.5% of every
 target zone. Known limit: discrete levels can't be split, so spiky inputs may slightly overshoot
 an over-full level.
+
+## ADR-015: Remove fountain_pens.jpg from the reference corpus
+
+**Context**: fountain_pens.jpg looked like an aesthetic outlier — more "paint-like" /
+posterised than the other four screensavers.
+
+**Decision**: Remove it from `original_kindle_screensavers/`. Recompute the canonical
+target and all analysis figures on the remaining four (letterpress, pen nibs, pencils,
+typewriter keys). Update reference_analysis.md and the embedded TARGET_PMF in index.html.
+
+**What the data said** (recorded honestly, since the stated reason was only partly right):
+- "More binary" — **not supported**. Its midtone (33.5%) was higher than three of the
+  other four; pen_nibs (25.9%) is the genuinely most-bimodal image.
+- "Paint-like / smooth regions" — **supported**. Highest grain correlation (lag-1 0.77 vs
+  0.42–0.63) and lowest fine-texture-to-structure ratio.
+- "Blown to white" — **supported**. Highest pure-white clip (13.1% vs 3.5–10.2%).
+
+**Consequence**: The target shifted mostly at the **white end** — canonical pure-white
+7.3%→5.9%, near-white 14.4%→13.1%, white-clip max 13.1%→10.2%. Black and midtone barely
+moved (pure-black 15.2%→14.5%, midtone 32.4%→32.2%), confirming it was the blown-white
+outlier, not the bimodal one. The Match tone mode (ADR-014) now targets a slightly more
+black-dominant distribution. Strengthens the ADR-013 raised-white-point rationale — even
+less pure white to reproduce.
