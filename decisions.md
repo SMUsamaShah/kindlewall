@@ -172,3 +172,39 @@ moved (pure-black 15.2%→14.5%, midtone 32.4%→32.2%), confirming it was the b
 outlier, not the bimodal one. The Match tone mode (ADR-014) now targets a slightly more
 black-dominant distribution. Strengthens the ADR-013 raised-white-point rationale — even
 less pure white to reproduce.
+
+## ADR-016: Add a filter set (14 B&W looks) + fold tone toggle into it
+
+**Context**: The app had only the Kindle screensaver treatment (Curve/Match toggle).
+Not every wallpaper wants the aggressive Kindle look; a palette of general B&W looks is
+useful. Requested: at least 10 non-Kindle B&W filters, researched from real references.
+
+**Decision**: Introduce a `FILTERS` array — each entry a complete look. Two Kindle entries
+(Kindle = SCREEN_LUT + clarity; K-Match = histogram match + clarity) plus 14 B&W tonal
+treatments. The Curve/Match toggle (ADR-014) is removed; those two are now just the first
+two filter entries. Channel selector (ADR-010) stays as a separate universal greyscale
+basis. UI: two thumbnail strips (Channel = raw greyscale, Filter = toned), labelled.
+
+**Filter model (kept minimal)**: most filters are a pure tone curve compiled to a 256-LUT
+once at load via three helpers (scurve / levels / band). Optional per-filter fields add
+spatial work only where needed: `clarity` (Kindle, Bleach), `match` (K-Match), `glow`
+(Infrared). `grain` sets the Noise slider default — reuses the existing noise post-pass
+rather than adding a grain stage. One new spatial function (`glowPass`, ~15 lines) for
+halation; everything else reuses unsharpMask / buildMatchLUT.
+
+**Sources** (researched, B&W film/darkroom characteristics):
+- Tri-X vs HP5 characteristic curves — Tri-X punchier with highlight contrast, HP5 flatter
+  with a longer shadow toe and softer highlight roll-off (35mmc, kubusphoto, emulsive).
+- Lith printing — "creamy highlights and hard shadows… like a charcoal drawing"
+  (en.wikipedia.org/wiki/Lith_print, alternativephotography, emulsive).
+- Bleach bypass — retained silver = high contrast, rich/deep blacks, retained detail
+  (en.wikipedia.org/wiki/Bleach_bypass).
+- Solarization / Sabattier — partial tonal inversion (alternativephotography, photrio).
+- Vintage film tone-curve preset reference — gentle roll-off, lifted shadows, grain
+  (presetpedia).
+
+**Consequence**: `adjustments.tone` → `adjustments.filter`. Selecting a filter overrides the
+Noise slider with that filter's grain default. Filters' clarity/sharpen reuse the slider's
+final-sharpen stage (default 1.0×) — non-Kindle filters get sharpened too; users can lower
+it. Verified: all 16 filters build valid LUTs (executed from source); curves are distinct
+and match design; Solar is the only non-monotonic one.

@@ -166,6 +166,15 @@
     }
     .filter-item.sel span { color: var(--accent); }
 
+    .strip-label {
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      width: 100%;
+      margin-bottom: -8px;
+    }
+
     /* ── Adjustment sliders ── */
     #adjustments {
       width: 100%;
@@ -251,11 +260,10 @@
       <img id="preview-img" alt="">
     </div>
   </div>
+  <div class="strip-label">Channel</div>
   <div id="channel-row" class="filter-row"></div>
-  <div class="tabs" id="tone-tabs">
-    <button class="tab active" data-tone="curve">Curve</button>
-    <button class="tab" data-tone="match">Match</button>
-  </div>
+  <div class="strip-label">Filter</div>
+  <div id="filter-row" class="filter-row"></div>
   <div id="adjustments">
     <div class="adj-row">
       <label for="adj-brightness">Brightness</label>
@@ -405,17 +413,72 @@ const CHANNELS = [
   { id: 'b',   label: 'B',   fn: (r, g, b) => b },
 ];
 
-/* ── Screen pipeline config ── */
-const SCREEN_PIPELINE = {
-  clarityPasses: [
-    { radius: '25px', amount: 0.5 }, // macro: pushes inter-object shadows toward black
-    { radius: '5px',  amount: 0.4 }, // micro: fine grain/scratch/texture pop
-  ],
-  unsharpAmount: 1.0, // final edge sharpen — scaled by adjustments.sharpness
-};
+/* ── Filters ──
+ *
+ * Each filter is a complete B&W look applied after greyscale conversion.
+ * Most are a pure tone curve (built into a 256-entry LUT once at load). A few
+ * carry extra spatial work: `clarity` (multi-radius local contrast),
+ * `match` (histogram-match to the Kindle target), `glow` (highlight halation).
+ * `grain` sets the Noise slider's default for that look (film grain). The
+ * non-Kindle curves are grounded in real film/darkroom characteristics — see
+ * reference_analysis.md and the linked sources in decisions.md (ADR-016).
+ *
+ * Curve helpers operate in [0,1]:
+ *   scurve(t,k,w) — sigmoid contrast steepness k, blended w with linear
+ *   levels(t,b,wn,g) — black/white points + gamma
+ *   band(t,f,c) — compress range into [f,c] (lifts blacks / caps whites)
+ */
+const clamp01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
+const sig = (x, k) => 1 / (1 + Math.exp(-k * x));
+function scurve(t, k, w) {
+  const lo = sig(-0.5, k), hi = sig(0.5, k);
+  return clamp01(w * ((sig(t - 0.5, k) - lo) / (hi - lo)) + (1 - w) * t);
+}
+function levels(t, b, wn, g) { return clamp01(Math.pow(clamp01((t - b) / (wn - b)), g)); }
+const band = (t, f, c) => clamp01(f + t * (c - f));
+function buildLUT(curve) {
+  const lut = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) lut[i] = Math.max(0, Math.min(255, Math.round(curve(i / 255) * 255)));
+  return lut;
+}
+
+const SCREEN_CLARITY = [
+  { radius: '25px', amount: 0.5 }, // macro: pushes inter-object shadows toward black
+  { radius: '5px',  amount: 0.4 }, // micro: fine grain/scratch/texture pop
+];
+
+const FILTERS = [
+  // — Kindle screensaver looks (clarity + tone + sharpen) —
+  { id: 'kindle', label: 'Kindle',  lut: SCREEN_LUT, clarity: SCREEN_CLARITY },
+  { id: 'match',  label: 'K-Match', match: true,     clarity: SCREEN_CLARITY },
+  // — General B&W tonal treatments (pure curves unless noted) —
+  { id: 'neutral', label: 'Neutral', curve: t => t },
+  { id: 'hicon',   label: 'Hi-Con',  curve: t => scurve(t, 6, 1) },
+  { id: 'soft',    label: 'Soft',    curve: t => band(scurve(t, 2, 0.3), 0.06, 0.94) },
+  { id: 'noir',    label: 'Noir',    curve: t => scurve(levels(t, 0.12, 0.95, 1), 5, 0.85) },
+  { id: 'hikey',   label: 'Hi-Key',  curve: t => band(levels(t, 0, 1, 0.5), 0.22, 1) },
+  { id: 'lokey',   label: 'Lo-Key',  curve: t => clamp01(Math.pow(t, 1.9)) },
+  { id: 'matte',   label: 'Matte',   curve: t => band(scurve(t, 2.5, 0.35), 0.17, 0.86) },
+  { id: 'silver',  label: 'Silver',  curve: t => scurve(levels(t, 0.04, 0.97, 1), 3.5, 0.6) },
+  // Tri-X: punchy, midtone separation, slightly lifted toe (base fog), grain
+  { id: 'trix',    label: 'Tri-X',   curve: t => clamp01(Math.max(0.02, scurve(t, 4.2, 0.72))), grain: 22 },
+  // HP5: flatter, long shadow toe, soft highlight roll-off, finer grain
+  { id: 'hp5',     label: 'HP5',     curve: t => clamp01(scurve(Math.pow(t, 0.92), 2.3, 0.38) * 0.97), grain: 14 },
+  // Lith: hard crushed shadows + creamy soft highlights ("charcoal"), heavy grain
+  { id: 'lith',    label: 'Lith',    curve: t => t < 0.45 ? clamp01(Math.pow(t / 0.45, 2.1) * 0.45)
+                                                          : clamp01(0.45 + Math.pow(clamp01((t - 0.45) / 0.55), 0.55) * 0.55), grain: 30 },
+  // Bleach bypass: high contrast, deep blacks, retained detail, light clarity, grain
+  { id: 'bleach',  label: 'Bleach',  curve: t => scurve(levels(t, 0.08, 1, 1), 5, 0.8), clarity: [{ radius: '8px', amount: 0.35 }], grain: 18 },
+  // Solarized (Sabattier): partial tonal inversion in the highlights
+  { id: 'solar',   label: 'Solar',   curve: t => t < 0.65 ? clamp01(t / 0.65 * 0.9) : clamp01(0.9 - ((t - 0.65) / 0.35) * 0.55) },
+  // Infrared: bright midtones, crushed deep shadow, highlight halation glow, grain
+  { id: 'ir',      label: 'Infrared',curve: t => clamp01(Math.pow(levels(t, 0.05, 1, 1), 0.6)), glow: 0.5, grain: 15 },
+];
+// Build LUTs for curve-based filters once at load.
+for (const f of FILTERS) if (f.curve && !f.lut) f.lut = buildLUT(f.curve);
 
 /* ── Adjustments state ── */
-const adjustments = { channel: 'lum', tone: 'curve', brightness: 0, contrast: 0, sharpness: 100, noise: 0 };
+const adjustments = { channel: 'lum', filter: 'kindle', brightness: 0, contrast: 0, sharpness: 100, noise: 0 };
 let filteredImageData = null; // grey snapshot after full pipeline, before B/C/N post-pass
 let blobGen = 0;              // stale-blob guard: only the latest toBlob() call updates the preview
 
@@ -436,6 +499,7 @@ const dropzone   = $('dropzone');
 const fileInput  = $('file-input');
 const cropImg    = $('crop-img');
 const channelRow = $('channel-row');
+const filterRow  = $('filter-row');
 const previewImg = $('preview-img');
 
 workCanvas.width = W; workCanvas.height = H;
@@ -453,16 +517,6 @@ document.querySelectorAll('#sec-drop .tab').forEach(btn => {
     document.querySelectorAll('#sec-drop .tab').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     mode = btn.dataset.mode;
-  });
-});
-
-/* ── Tone tabs (Curve / Match) ── full-pipeline param, re-runs applyFilter ── */
-document.querySelectorAll('#tone-tabs .tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('#tone-tabs .tab').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    adjustments.tone = btn.dataset.tone;
-    applyFilter();
   });
 });
 
@@ -590,6 +644,7 @@ $('btn-confirm-crop').addEventListener('click', () => {
 /* ── Filter section ── */
 function setupFilters() {
   buildChannelStrip();
+  buildFilterStrip();
   show('filter');
   $('btn-recrop').style.display = '';
   applyFilter();
@@ -597,9 +652,11 @@ function setupFilters() {
 
 /* ── Channel strip ──
  *
- * Four thumbnails (Lum / R / G / B). Clicking one switches greyscale conversion
- * and re-runs the full pipeline. Thumbnails apply toGrey + LUT inline —
- * clarity passes are skipped at thumb size (imperceptible, expensive).
+ * Four thumbnails (Lum / R / G / B) showing the raw greyscale basis (no tone
+ * curve), so the comparison is about colour→grey mixing only. On an
+ * already-grey image all four look identical (R=G=B) — itself informative.
+ * Changing channel also rebuilds the filter strip, whose thumbnails are toned
+ * versions of the chosen greyscale.
  */
 function buildChannelStrip() {
   const tc = document.createElement('canvas');
@@ -614,8 +671,7 @@ function buildChannelStrip() {
     const tCtx   = thumb.getContext('2d');
     const result = tCtx.createImageData(THUMB_W, THUMB_H);
     for (let i = 0; i < td.data.length; i += 4) {
-      let v = Math.max(0, Math.min(255, Math.round(ch.fn(td.data[i], td.data[i+1], td.data[i+2]))));
-      v = SCREEN_LUT[v];
+      const v = Math.max(0, Math.min(255, Math.round(ch.fn(td.data[i], td.data[i+1], td.data[i+2]))));
       result.data[i] = result.data[i+1] = result.data[i+2] = v;
       result.data[i+3] = 255;
     }
@@ -630,26 +686,81 @@ function buildChannelStrip() {
       channelRow.querySelectorAll('.filter-item').forEach(i => i.classList.remove('sel'));
       item.classList.add('sel');
       adjustments.channel = ch.id;
+      buildFilterStrip();   // filter thumbnails depend on the greyscale basis
       applyFilter();
     });
     channelRow.append(item);
   }
 }
 
+/* ── Filter strip ──
+ *
+ * One thumbnail per FILTER, each = greyscale(current channel) + that filter's
+ * tone. Clarity / glow are skipped at thumb size (expensive, ~imperceptible);
+ * histogram-match runs on the thumb histogram (cheap). Selecting a filter sets
+ * the Noise slider to that filter's grain default, then re-runs the pipeline.
+ */
+function buildFilterStrip() {
+  const ch = CHANNELS.find(c => c.id === adjustments.channel);
+  const tc = document.createElement('canvas');
+  tc.width = THUMB_W; tc.height = THUMB_H;
+  tc.getContext('2d').drawImage(sourceCanvas, 0, 0, THUMB_W, THUMB_H);
+  const td = tc.getContext('2d').getImageData(0, 0, THUMB_W, THUMB_H);
+  // greyscale thumb (channel applied), reused for every filter's LUT
+  const grey = new Uint8ClampedArray(td.data.length);
+  for (let i = 0; i < td.data.length; i += 4) {
+    const v = Math.max(0, Math.min(255, Math.round(ch.fn(td.data[i], td.data[i+1], td.data[i+2]))));
+    grey[i] = grey[i+1] = grey[i+2] = v; grey[i+3] = 255;
+  }
+
+  filterRow.innerHTML = '';
+  for (const flt of FILTERS) {
+    const thumb = document.createElement('canvas');
+    thumb.width = THUMB_W; thumb.height = THUMB_H;
+    const tx  = thumb.getContext('2d');
+    const res = tx.createImageData(THUMB_W, THUMB_H);
+    const lut = flt.match ? buildMatchLUT(grey) : flt.lut;
+    for (let i = 0; i < grey.length; i += 4) {
+      const v = lut[grey[i]];
+      res.data[i] = res.data[i+1] = res.data[i+2] = v; res.data[i+3] = 255;
+    }
+    tx.putImageData(res, 0, 0);
+
+    const item  = document.createElement('div');
+    const label = document.createElement('span');
+    item.className = 'filter-item' + (flt.id === adjustments.filter ? ' sel' : '');
+    label.textContent = flt.label;
+    item.append(thumb, label);
+    item.addEventListener('click', () => {
+      filterRow.querySelectorAll('.filter-item').forEach(i => i.classList.remove('sel'));
+      item.classList.add('sel');
+      adjustments.filter = flt.id;
+      const g = flt.grain || 0;          // each filter carries its own film-grain default
+      adjustments.noise = g;
+      $('adj-noise').value = g;
+      $('val-noise').textContent = g;
+      applyFilter();
+    });
+    filterRow.append(item);
+  }
+}
+
 /* ── Apply filter (full pipeline) ──
  *
- * Runs on: channel change, tone change, sharpness change (debounced 150 ms).
+ * Runs on: channel change, filter change, sharpness change (debounced 150 ms).
  * Stores grey result as filteredImageData, then calls applyAdjustments().
  *
- * Pipeline: toGrey → clarity passes → tone (curve LUT or histogram match) → fine sharpen → snapshot
+ * Pipeline: greyscale(channel) → [clarity] → tone (curve LUT or histogram match)
+ *           → [glow] → final sharpen → snapshot. Bracketed stages are per-filter.
  */
 function applyFilter() {
   if (!sourceCanvas) return;
   const ch  = CHANNELS.find(c => c.id === adjustments.channel);
+  const flt = FILTERS.find(f => f.id === adjustments.filter) || FILTERS[0];
   const src = sourceCanvas.getContext('2d').getImageData(0, 0, W, H);
   const out = workCtx.createImageData(W, H);
 
-  // Step 1: Greyscale conversion
+  // Step 1: Greyscale conversion (channel basis)
   for (let i = 0; i < src.data.length; i += 4) {
     const v = Math.max(0, Math.min(255, Math.round(ch.fn(src.data[i], src.data[i+1], src.data[i+2]))));
     out.data[i] = out.data[i+1] = out.data[i+2] = v;
@@ -659,17 +770,16 @@ function applyFilter() {
 
   const steps = [];
 
-  // Step 2: Clarity passes (fixed amounts — local contrast, independent of Sharpness slider)
-  for (const pass of SCREEN_PIPELINE.clarityPasses) {
+  // Step 2: Clarity passes (optional, before tone — local contrast at fixed amounts)
+  if (flt.clarity) for (const pass of flt.clarity) {
     steps.push(() => unsharpMask(workCanvas, pass.amount, pass.radius));
   }
 
-  // Step 3: Tone — fixed curve LUT, or per-image histogram match to the
-  // canonical target (reference_analysis.md §12). Match builds its LUT from
-  // the clarity output's own histogram, so it must read the canvas at run time.
+  // Step 3: Tone — histogram match (Kindle target) or the filter's curve LUT.
+  // Match builds its LUT from the (post-clarity) histogram, so it reads at run time.
   steps.push(() => {
     const d = workCtx.getImageData(0, 0, W, H);
-    const lut = adjustments.tone === 'match' ? buildMatchLUT(d.data) : SCREEN_LUT;
+    const lut = flt.match ? buildMatchLUT(d.data) : flt.lut;
     for (let i = 0; i < d.data.length; i += 4) {
       const v = lut[d.data[i]];
       d.data[i] = d.data[i+1] = d.data[i+2] = v;
@@ -677,10 +787,13 @@ function applyFilter() {
     workCtx.putImageData(d, 0, 0);
   });
 
-  // Step 4: Fine edge sharpening, scaled by Sharpness slider (0–200 → 0×–2×)
+  // Step 4: Glow / halation (optional, after tone — Infrared)
+  if (flt.glow) steps.push(() => glowPass(workCanvas, flt.glow));
+
+  // Step 5: Final edge sharpening, scaled by Sharpness slider (0–200 → 0×–2×)
   const sharpScale = adjustments.sharpness / 100;
   if (sharpScale > 0) {
-    steps.push(() => unsharpMask(workCanvas, SCREEN_PIPELINE.unsharpAmount * sharpScale, '1.5px'));
+    steps.push(() => unsharpMask(workCanvas, sharpScale, '1.5px'));
   }
 
   // Snapshot grey result, then apply B/C/N post-pass
@@ -752,6 +865,29 @@ async function unsharpMask(canvas, amount, radius = '1.5px') {
   ctx.putImageData(orig, 0, 0);
 }
 
+/* ── Glow / halation — bloom bright areas into their surroundings (Infrared) ──
+ * Heavy GPU blur, then add back only the bright part of the blur. amount scales
+ * the bleed. Reuses the CSS-blur-on-offscreen-canvas trick from unsharpMask.
+ */
+async function glowPass(canvas, amount) {
+  const { width: w, height: h } = canvas;
+  const ctx   = canvas.getContext('2d');
+  const blurC = document.createElement('canvas');
+  blurC.width = w; blurC.height = h;
+  const bCtx  = blurC.getContext('2d');
+  bCtx.filter = 'blur(7px)';
+  bCtx.drawImage(canvas, 0, 0);
+  const orig    = ctx.getImageData(0, 0, w, h);
+  const blurred = bCtx.getImageData(0, 0, w, h);
+  for (let i = 0; i < orig.data.length; i += 4) {
+    const bloom = blurred.data[i] - 110;          // only highlights bloom
+    const v = bloom > 0 ? orig.data[i] + amount * bloom : orig.data[i];
+    const c = Math.max(0, Math.min(255, Math.round(v)));
+    orig.data[i] = orig.data[i+1] = orig.data[i+2] = c;
+  }
+  ctx.putImageData(orig, 0, 0);
+}
+
 /* ── Slider wiring ──
  *
  * wireSlider(inputId, adjustmentsKey, displayFmt, fullPipeline)
@@ -806,8 +942,7 @@ $('btn-reset').addEventListener('click', () => {
   sourceCanvas = null; filteredImageData = null; outputBlob = null; originalBlob = null;
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
   fileInput.value = '';
-  Object.assign(adjustments, { channel: 'lum', tone: 'curve', brightness: 0, contrast: 0, sharpness: 100, noise: 0 });
-  document.querySelectorAll('#tone-tabs .tab').forEach(b => b.classList.toggle('active', b.dataset.tone === 'curve'));
+  Object.assign(adjustments, { channel: 'lum', filter: 'kindle', brightness: 0, contrast: 0, sharpness: 100, noise: 0 });
   $('adj-brightness').value = 0;   $('val-brightness').textContent = '0';
   $('adj-contrast').value   = 0;   $('val-contrast').textContent   = '0';
   $('adj-sharpness').value  = 100; $('val-sharpness').textContent  = '1.0×';

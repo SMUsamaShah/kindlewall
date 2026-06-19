@@ -48,15 +48,14 @@ Blob → [crop/autofit] → sourceCanvas (colour, 1072×1448)
 
 ## Two-tier pipeline
 
-**applyFilter()** — full pipeline, runs on: channel change, tone change, sharpness change (150 ms debounce).
+**applyFilter()** — full pipeline, runs on: channel change, filter change, sharpness change (150 ms debounce).
 1. `toGrey(r,g,b)` — greyscale conversion (from CHANNELS, keyed by `adjustments.channel`)
-2. Clarity passes: unsharp at 25 px (macro) then 5 px (micro) — fixed amounts
-3. Tone — one of two modes (`adjustments.tone`):
-   - **curve**: SCREEN_LUT — level stretch (black<20→0, **white>245→255**) + k=4 S-curve, 60/40 blend
-   - **match**: per-image histogram match to the canonical target distribution (TARGET_CDF), forcing the exact bathtub incl. endpoint clipping regardless of input
-4. Fine unsharp 1.5 px — amount = `SCREEN_PIPELINE.unsharpAmount × (sharpness/100)`
-5. Snapshot grey result → `filteredImageData`
-6. Calls `applyAdjustments()`
+2. Clarity passes (only if the selected filter defines `clarity`): unsharp at the filter's radii
+3. Tone — the selected filter's LUT, or histogram match if the filter sets `match: true`
+4. Glow (only if the filter defines `glow`): highlight halation bloom (Infrared)
+5. Fine unsharp 1.5 px — amount = `sharpness/100`
+6. Snapshot grey result → `filteredImageData`
+7. Calls `applyAdjustments()`
 
 **applyAdjustments()** — fast post-pass (single pixel loop), runs on: brightness/contrast/noise change.
 Reads `filteredImageData`, writes adjusted pixels to `workCanvas`, encodes JPEG blob.
@@ -65,33 +64,42 @@ Reads `filteredImageData`, writes adjusted pixels to `workCanvas`, encodes JPEG 
 
 ## Channel selector
 
-Replaces the old Screen / Screen R / Screen G / Screen B filter variants.
-Identical pipeline, only the greyscale conversion differs:
-
-| Channel | fn(r,g,b) |
-|---------|-----------|
-| Lum | 0.2126r + 0.7152g + 0.0722b |
-| R | r |
-| G | g |
-| B | b |
+Universal greyscale basis (`adjustments.channel`, default `lum`), shown as a 4-thumbnail
+strip (Lum / R / G / B). Thumbnails show the **raw** greyscale (no tone curve) so the
+comparison is about colour→grey mixing only; on an already-grey image all four look
+identical. Only relevant for colour input.
 
 ---
 
-## Tone selector
+## Filters
 
-Toggle (`adjustments.tone`, default `curve`) between two tone operators applied after clarity.
-Derived from `reference_analysis.md`.
+The look (`adjustments.filter`, default `kindle`), shown as a thumbnail strip. Each filter
+is a complete B&W treatment applied after greyscale. Most are a pure tone curve built into
+a 256-entry LUT once at load; a few carry extra spatial work:
 
-| Mode | What it does |
-|------|--------------|
-| Curve | Fixed SCREEN_LUT: black point 20→0, white point 245→255, gentle k=4 S-curve. Predictable, gentle, cheap. |
-| Match | Histogram-matches the post-clarity image to the canonical Kindle target (TARGET_CDF). Forces the exact bathtub distribution (~15% pure black, ~7% pure white, flat midtone) regardless of input. |
+| Filter | Tone | Extra | Notes |
+|--------|------|-------|-------|
+| Kindle | SCREEN_LUT (level-stretch + gentle-S, white 245) | clarity (25/5 px) | the screensaver look |
+| K-Match | histogram-match to canonical target | clarity (25/5 px) | forces the exact bathtub |
+| Neutral | identity | — | plain greyscale |
+| Hi-Con | steep S (k=6) | — | punchy |
+| Soft | low-contrast S, mild | — | gentle, full range |
+| Noir | crushed blacks + strong S | — | dramatic |
+| Hi-Key | gamma-lift + raised floor | — | bright, airy |
+| Lo-Key | gamma 1.9 | — | dark, moody |
+| Matte | lifted black floor + capped white | — | faded film look |
+| Silver | deep endpoints + smooth S | — | darkroom silver-gelatin |
+| Tri-X | S + lifted toe (base fog) | grain 22 | punchy, midtone separation |
+| HP5 | flatter, long toe, soft shoulder | grain 14 | gentle, shadow detail |
+| Lith | hard crushed shadows + creamy highlights | grain 30 | "charcoal" |
+| Bleach | high-contrast + deep blacks | clarity (8 px) + grain 18 | bleach bypass |
+| Solar | partial highlight inversion | — | Sabattier (non-monotonic) |
+| Infrared | bright midtones + crushed shadow | glow + grain 15 | halation |
 
-Match builds its LUT from the image's own histogram each run, so it must read the canvas at
-pipeline time. Both CDFs are monotonic → O(256) single-pass build, no per-pixel allocation.
-Limitation: if a single source level holds more mass than its target level should, matching
-can't split it, so a spiky input (e.g. already-blown highlights) may slightly overshoot that
-level — inherent to monotonic LUT matching, not a defect.
+Non-Kindle curves are grounded in real film/darkroom characteristics (see ADR-016).
+Selecting a filter sets the Noise slider to that filter's `grain` default (film grain;
+0 for non-grain filters). Filter thumbnails apply greyscale(channel) + the filter LUT;
+clarity/glow are skipped at thumb size, histogram-match runs on the thumb histogram.
 
 ---
 
