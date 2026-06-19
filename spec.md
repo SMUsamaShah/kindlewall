@@ -48,10 +48,12 @@ Blob → [crop/autofit] → sourceCanvas (colour, 1072×1448)
 
 ## Two-tier pipeline
 
-**applyFilter()** — full pipeline, runs on: channel change, sharpness change (150 ms debounce).
+**applyFilter()** — full pipeline, runs on: channel change, tone change, sharpness change (150 ms debounce).
 1. `toGrey(r,g,b)` — greyscale conversion (from CHANNELS, keyed by `adjustments.channel`)
 2. Clarity passes: unsharp at 25 px (macro) then 5 px (micro) — fixed amounts
-3. SCREEN_LUT — level stretch (black<20→0, white>230→255) + k=4 S-curve, 60/40 blend
+3. Tone — one of two modes (`adjustments.tone`):
+   - **curve**: SCREEN_LUT — level stretch (black<20→0, **white>245→255**) + k=4 S-curve, 60/40 blend
+   - **match**: per-image histogram match to the canonical target distribution (TARGET_CDF), forcing the exact bathtub incl. endpoint clipping regardless of input
 4. Fine unsharp 1.5 px — amount = `SCREEN_PIPELINE.unsharpAmount × (sharpness/100)`
 5. Snapshot grey result → `filteredImageData`
 6. Calls `applyAdjustments()`
@@ -72,6 +74,24 @@ Identical pipeline, only the greyscale conversion differs:
 | R | r |
 | G | g |
 | B | b |
+
+---
+
+## Tone selector
+
+Toggle (`adjustments.tone`, default `curve`) between two tone operators applied after clarity.
+Derived from `reference_analysis.md`.
+
+| Mode | What it does |
+|------|--------------|
+| Curve | Fixed SCREEN_LUT: black point 20→0, white point 245→255, gentle k=4 S-curve. Predictable, gentle, cheap. |
+| Match | Histogram-matches the post-clarity image to the canonical Kindle target (TARGET_CDF). Forces the exact bathtub distribution (~15% pure black, ~7% pure white, flat midtone) regardless of input. |
+
+Match builds its LUT from the image's own histogram each run, so it must read the canvas at
+pipeline time. Both CDFs are monotonic → O(256) single-pass build, no per-pixel allocation.
+Limitation: if a single source level holds more mass than its target level should, matching
+can't split it, so a spiky input (e.g. already-blown highlights) may slightly overshoot that
+level — inherent to monotonic LUT matching, not a defect.
 
 ---
 

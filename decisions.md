@@ -107,3 +107,45 @@ at a variable opacity — would fix the pattern drift but adds a canvas allocati
 Noise is a cosmetic option; pattern drift on slider drag is tolerable.
 
 **Revisit if**: users find the shifting grain distracting when tuning brightness/contrast.
+
+## ADR-013: White point 230 → 245 in SCREEN_LUT (curve mode)
+
+**Context**: Analysis of the 5 reference images (reference_analysis.md §6) showed they clip
+only ~7–13% of pixels to pure white, measured on the grey channel. The old WHITE_IN=230
+overproduced white. (The earlier "7–20% pure white" figure in spec.md was measured on BT.709
+luminance of an already-grey image, which rounds blown highlights just under 255 and understated
+the true clip — see reference_analysis.md §2.)
+
+**Decision**: Raise WHITE_IN to 245.
+
+**Consequence (traced, not assumed)**: WHITE_IN is both the clip threshold and the denominator
+of the midtone remap `t=(i-BLACK_IN)/(WHITE_IN-BLACK_IN)`, so the change does two coupled things:
+- Highlight rescue: inputs 230–244 (15 levels) that were slammed flat to 255 now keep a 13-level
+  gradient (242→254) — bright texture is preserved instead of clipped to a white blob.
+- Midtone darkening: the wider denominator rescales the whole curve down ~8.7 levels on average
+  (peak −14 around input 200). Intended — moves toward the references' heavier shadows / median ~87.
+
+These cannot be separated in a single-curve design. Accepted the coupling; users who want lighter
+output have the Brightness slider. Match mode (ADR-014) is unaffected — it bypasses this curve.
+
+---
+
+## ADR-014: Histogram-match tone mode
+
+**Context**: The curve is a hand-tuned approximation. reference_analysis.md §12 provides the
+canonical target distribution as data, enabling exact tonal reproduction via histogram matching.
+
+**Decision**: Add a `tone` toggle (Curve / Match). Match builds a per-image LUT mapping each
+source grey level to the target level with the nearest cumulative mass (TARGET_CDF, embedded as
+TARGET_PMF). Runs after clarity, before the final sharpen — same pipeline slot as the curve LUT.
+
+**Why both, not replace**: Curve is predictable and gentle (good default for a live preview);
+Match is aggressive and exact but can look harsh on images that don't suit the bathtub (it forces
+15% black + 7% white onto any input). Keeping both is one small toggle and ~30 lines; gives the
+user the cheap path and the perfect path.
+
+**Properties**: Endpoint clipping falls out for free (no BLACK_IN/WHITE_IN needed in this mode).
+Monotonic CDFs → O(256) LUT build via single forward pointer, no per-pixel allocation. Verified
+on uniform, real-reference, and flat-midtone gaussian inputs: all land within ~0.5% of every
+target zone. Known limit: discrete levels can't be split, so spiky inputs may slightly overshoot
+an over-full level.
