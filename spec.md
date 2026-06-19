@@ -1,91 +1,103 @@
-# Kindle Wallpaper — Spec
+# KindleWall — Spec
 
-> Source of truth. Supersedes specifications.md.
+## Purpose
+Convert any image to a Kindle Paperwhite 10th gen screensaver:
+**1072×1448 px, greyscale JPEG**.
 
-## What it does
-Single-purpose PWA: convert any image to a Kindle Paperwhite 10th gen wallpaper
-(1072×1448 px, greyscale), then share to X-Plore or any SSH/file app.
+---
 
-## Target device
-- Model: Kindle Paperwhite 10th gen (PQ94WIF)
-- Screen: 1072×1448 px, 6", greyscale e-ink
-- Hosted at: https://xosh.org/kindlewall/
+## Architecture
+Single-file PWA — no build step, no backend.
 
-## Files
 | File | Role |
 |------|------|
-| index.html | Entire app — shell, CSS, JS |
-| manifest.json | PWA manifest; declares share_target |
-| sw.js | Service worker — share POST handler, offline cache |
-| icon.svg | App icon |
-| spec.md | This file |
-| decisions.md | Architecture decisions |
-| failures.md | Things tried that didn't work |
+| `index.html` | Entire app: shell, CSS, JS |
+| `sw.js` | Service worker — share POST handler + caching |
+| `manifest.json` | PWA manifest, declares Web Share Target |
 
-## Crop modes
+---
 
-### Auto Fit
-Scale image to cover 1072×1448 (whichever axis needs more), centre-crop overflow.
-Colour sourceCanvas filled → filter applied after.
+## User flow
 
-### Manual Crop (no-resize)
-Cropper.js crop box is set to exactly 1072×1448 natural image pixels via `setData`.
-Box is non-resizable (`cropBoxResizable: false`).
-User drags box to choose region; pinch-zooms image.
-On confirm: `getData(true)` → `drawImage(img, x, y, W, H, 0, 0, W, H)`.
-Pure 1:1 pixel extraction — zero resize, zero blur.
-If source image < 1072×1448: warns user, some upscaling unavoidable.
+```
+[Drop/Pick image] → [Auto Fit OR Manual Crop] → [Channel + Adjustments] → [Send/Download]
+```
 
-## Filter pipeline
-Filters are applied AFTER crop to the colour sourceCanvas.
+**Section: drop** — drag-drop or file picker, Auto Fit / Manual Crop tab.
 
-### Standard filters (fn only)
-`fn(r, g, b) → 0–255` greyscale value. Applied per-pixel to sourceCanvas.
-Then optional unsharp mask.
+**Section: crop** — Manual Crop only. Cropper.js with fixed, non-resizable 1072×1448 box.
+`getData(true)` → drawImage at natural pixels (zero resize when source ≥ target).
 
-### Screen filters (multi-stage)
-`toGrey(r, g, b) → 0–255` → clarityPasses[] (unsharp at large radius) → LUT → unsharp.
+**Section: filter** — Channel strip (Lum/R/G/B thumbnails) + adjustment sliders + Send/Download.
 
-| Filter | toGrey | Notes |
-|--------|--------|-------|
-| Screen | luminosity | Best all-round starting point |
-| Screen R | red channel | Warms tones bright, blues/greens dark |
-| Screen G | green channel | Closest to luminosity, smooth |
-| Screen B | blue channel | Skies/cool highlights bright, warm tones dark |
-| Natural | luminosity | No tone curve |
-| Vivid | luminosity | S-curve |
-| Deep | luminosity | Black point clip + stretch |
-| Bright | luminosity | Gamma 0.65 |
-| Portrait | green-heavy | Compressed range |
-| Landscape | red-heavy | Infrared-ish |
-| Kindle | luminosity | Strong S-curve + level + unsharp |
+---
 
-### SCREEN_LUT
-Level stretch (black in 20→0, white in 230→255) + gentle S-curve (k=4, 60/40 blend
-with linear) to preserve texture-rich mid-grey while clipping extremes.
+## Image pipeline
 
-Rationale: pixel analysis of 5 original Kindle screensaver images showed:
-- 28–45% pure black (from deep shadows, NOT from tone curve)
-- 26–40% mid-grey (texture — must not be crushed)
-- 7–20% pure white (hard-clipped metallic highlights)
-k=8 sigmoid was wrong (see failures.md).
+```
+Blob → [crop/autofit] → sourceCanvas (colour, 1072×1448)
+  → applyFilter()     (full pipeline — channel + clarity + LUT + sharpen)
+  → filteredImageData (grey snapshot)
+  → applyAdjustments() (fast post-pass — brightness / contrast / noise)
+  → workCanvas → JPEG blob → preview
+```
 
-### Unsharp mask
-GPU blur (CSS `filter: blur(Npx)`) on offscreen canvas, then:
-`pixel + amount × (pixel − blurred)` per pixel.
-Used at two scales: large radius = clarity pass, small radius = edge sharpen.
+`sourceCanvas` stays colour (ADR-002) so channel switching re-runs cheaply.
 
-## Share flows
+---
 
-### Receive (Web Share Target)
-POST multipart/form-data to `./share-target` (field: `image`).
-SW stores blob in `kw-pending-v1` cache, redirects to `?shared=1`.
-Page reads blob, always routes through crop screen (framing unknown when shared).
+## Two-tier pipeline
 
-### Send (Web Share API)
-`navigator.share({ files: [png] })` → Android share sheet → X-Plore / SSH app.
-Falls back to download if `canShare` unavailable.
+**applyFilter()** — full pipeline, runs on: channel change, sharpness change (150 ms debounce).
+1. `toGrey(r,g,b)` — greyscale conversion (from CHANNELS, keyed by `adjustments.channel`)
+2. Clarity passes: unsharp at 25 px (macro) then 5 px (micro) — fixed amounts
+3. SCREEN_LUT — level stretch (black<20→0, white>230→255) + k=4 S-curve, 60/40 blend
+4. Fine unsharp 1.5 px — amount = `SCREEN_PIPELINE.unsharpAmount × (sharpness/100)`
+5. Snapshot grey result → `filteredImageData`
+6. Calls `applyAdjustments()`
 
-## Install (one-time)
-Open https://xosh.org/kindlewall/ in Chrome → ⋮ → Add to Home Screen.
-App appears in Android share sheet.
+**applyAdjustments()** — fast post-pass (single pixel loop), runs on: brightness/contrast/noise change.
+Reads `filteredImageData`, writes adjusted pixels to `workCanvas`, encodes JPEG blob.
+
+---
+
+## Channel selector
+
+Replaces the old Screen / Screen R / Screen G / Screen B filter variants.
+Identical pipeline, only the greyscale conversion differs:
+
+| Channel | fn(r,g,b) |
+|---------|-----------|
+| Lum | 0.2126r + 0.7152g + 0.0722b |
+| R | r |
+| G | g |
+| B | b |
+
+---
+
+## Adjustment sliders
+
+| Slider | Range | Default | Tier | Notes |
+|--------|-------|---------|------|-------|
+| Brightness | −100 to +100 | 0 | fast | Pixel offset |
+| Contrast | −100 to +100 | 0 | fast | factor=(100+c)/100; 0→flat grey, 2→double |
+| Sharpness | 0–200 (= 0×–2×) | 100 | full | Scales final 1.5 px unsharp only |
+| Noise | 0–50 | 0 | fast | ±noise per pixel, re-randomised each call |
+
+---
+
+## Share flow
+
+**Receive** — Android share → POST multipart → SW stores blob in `kw-pending-v1` cache →
+redirect `?shared=1` → page reads blob, routes to Manual Crop (ADR-005).
+
+**Send** — `navigator.share({ files })` → Android share sheet → X-Plore SSH to Kindle.
+Falls back to `<a download>` if Web Share API absent.
+
+---
+
+## Service worker
+
+- CDN (Cropper.js): cache-first (versioned URL)
+- Own-origin: network-first, caches as offline fallback
+- `skipWaiting()` + `clients.claim()` on install/activate (ADR-009)

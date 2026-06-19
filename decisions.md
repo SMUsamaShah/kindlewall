@@ -59,3 +59,51 @@ had no effect on installed PWA users. The browser only reinstalls the SW when
 `sw.js` changes byte-for-byte; if only `index.html` changed, the old cached copy
 was served indefinitely. CDN resources use versioned URLs and never change, so
 cache-first is safe and faster there.
+
+## ADR-010: Replace Screen R/G/B filter variants with a channel selector
+
+**Context**: Had four FILTERS entries (Screen, Screen R, Screen G, Screen B) that were identical
+except for `toGrey`. This caused duplication and a growing filter strip for what is conceptually
+one knob.
+
+**Decision**: Collapse to a single `CHANNELS` array with four entries (Lum/R/G/B). The channel
+strip re-uses the same `.filter-item` thumbnail UI. A single `SCREEN_PIPELINE` const holds the
+shared config. `adjustments.channel` drives `toGrey` selection at pipeline run-time.
+
+**Consequence**: The `FILTERS` array and `currentFilter` state are removed. Filter section now
+has no "which filter am I on" state — there is only one pipeline.
+
+---
+
+## ADR-011: Two-tier pipeline (applyFilter / applyAdjustments)
+
+**Context**: Brightness, contrast, and noise are per-pixel arithmetic — sub-millisecond on a
+full 1072×1448 image. Clarity passes (async GPU blur) and the LUT are more expensive.
+Sharpness scales the final unsharp, so it requires re-running the last step of applyFilter.
+
+**Decision**: Split into two functions:
+- `applyFilter()` — full pipeline (greyscale → clarity → LUT → sharpen). Triggered by channel
+  and sharpness changes (sharpness debounced 150 ms). Stores result as `filteredImageData`.
+- `applyAdjustments()` — fast post-pass (brightness/contrast/noise). Reads `filteredImageData`,
+  writes to workCanvas, encodes blob. Triggered directly by B/C/N slider input events.
+
+Clarity passes are NOT scaled by the Sharpness slider — they control local contrast/structure
+and their amounts are part of the Screen filter's identity, not a user tuning knob.
+
+**blobGen guard**: rapid slider moves queue multiple `toBlob()` calls. A monotonically
+increasing `blobGen` counter ensures only the latest callback updates `outputBlob` and the
+preview. Stale callbacks return early.
+
+---
+
+## ADR-012: Noise re-randomised per applyAdjustments call
+
+**Context**: The noise field adds `±noise` random per-pixel. Because `applyAdjustments()` calls
+`Math.random()` inline, moving *any* fast slider (brightness, contrast) after setting noise will
+re-roll the grain pattern.
+
+**Decision**: Accept this for now. The alternative — a pre-generated static noise canvas blended
+at a variable opacity — would fix the pattern drift but adds a canvas allocation and a blend pass.
+Noise is a cosmetic option; pattern drift on slider drag is tolerable.
+
+**Revisit if**: users find the shifting grain distracting when tuning brightness/contrast.

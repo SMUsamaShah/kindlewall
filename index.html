@@ -166,6 +166,37 @@
     }
     .filter-item.sel span { color: var(--accent); }
 
+    /* ── Adjustment sliders ── */
+    #adjustments {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .adj-row {
+      display: grid;
+      grid-template-columns: 76px 1fr 40px;
+      align-items: center;
+      gap: 8px;
+    }
+    .adj-row label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .adj-row input[type=range] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .adj-val {
+      font-size: 11px;
+      color: var(--muted);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
     .btn-row   { display: flex; gap: 10px; }
     .ghost-row { display: flex; gap: 16px; }
 
@@ -220,7 +251,29 @@
       <img id="preview-img" alt="">
     </div>
   </div>
-  <div id="filter-row" class="filter-row"></div>
+  <div id="channel-row" class="filter-row"></div>
+  <div id="adjustments">
+    <div class="adj-row">
+      <label for="adj-brightness">Brightness</label>
+      <input type="range" id="adj-brightness" min="-100" max="100" value="0" step="1">
+      <span class="adj-val" id="val-brightness">0</span>
+    </div>
+    <div class="adj-row">
+      <label for="adj-contrast">Contrast</label>
+      <input type="range" id="adj-contrast" min="-100" max="100" value="0" step="1">
+      <span class="adj-val" id="val-contrast">0</span>
+    </div>
+    <div class="adj-row">
+      <label for="adj-sharpness">Sharpness</label>
+      <input type="range" id="adj-sharpness" min="0" max="200" value="100" step="5">
+      <span class="adj-val" id="val-sharpness">1.0×</span>
+    </div>
+    <div class="adj-row">
+      <label for="adj-noise">Noise</label>
+      <input type="range" id="adj-noise" min="0" max="50" value="0" step="1">
+      <span class="adj-val" id="val-noise">0</span>
+    </div>
+  </div>
   <div class="btn-row">
     <button class="primary"   id="btn-send">Send to Kindle</button>
     <button class="secondary" id="btn-dl">Download</button>
@@ -257,16 +310,14 @@ const THUMB_W = 36, THUMB_H = 49;
  *
  * Correct recipe (revised from initial k=8 sigmoid which was wrong):
  *   1. Dual clarity — macro (25px) for structure shadows, fine (5px) for grain
- *   2. Level stretch: black point 20→0, white point 230→255 (creates the hard
- *      black/white clips seen in all 5 images)
- *   3. Gentle S-curve (k=4, 60% weight) blended with linear (40%) to add snap
- *      without crushing the texture-rich midtones
- *   4. Hard final sharpen (1.5px, 1.0) — measured gradient p90 = 77–112
+ *   2. Level stretch: black point 20→0, white point 230→255
+ *   3. Gentle S-curve (k=4, 60% weight) blended with linear (40%)
+ *   4. Hard final sharpen (1.5px, 1.0) — scaled by Sharpness slider
  */
 const SCREEN_LUT = (() => {
   const lut = new Uint8Array(256);
-  const BLACK_IN = 20;   // input ≤ this → 0  (clips deep shadows to pure black)
-  const WHITE_IN = 230;  // input ≥ this → 255 (clips highlights to pure white)
+  const BLACK_IN = 20;
+  const WHITE_IN = 230;
   const k = 4, mid = 0.5;
   const lo  = 1 / (1 + Math.exp(-k * (0   - mid)));
   const hi  = 1 / (1 + Math.exp(-k * (1   - mid)));
@@ -274,69 +325,42 @@ const SCREEN_LUT = (() => {
   for (let i = 0; i < 256; i++) {
     if (i <= BLACK_IN) { lut[i] = 0;   continue; }
     if (i >= WHITE_IN) { lut[i] = 255; continue; }
-    const t = (i - BLACK_IN) / (WHITE_IN - BLACK_IN); // remap midrange to 0–1
-    const s = ((1 / (1 + Math.exp(-k * (t - mid)))) - lo) / rng; // gentle S
-    lut[i] = Math.round((0.6 * s + 0.4 * t) * 255); // blend: snap without crushing texture
+    const t = (i - BLACK_IN) / (WHITE_IN - BLACK_IN);
+    const s = ((1 / (1 + Math.exp(-k * (t - mid)))) - lo) / rng;
+    lut[i] = Math.round((0.6 * s + 0.4 * t) * 255);
   }
   return lut;
 })();
 
-/* ── Filters ──
+/* ── Channels ──
  *
- * Standard filters: { id, label, fn(r,g,b)→0–255 }
- *   fn converts colour to final greyscale value in one step.
- *
- * Screen filter uses a multi-stage approach:
- *   toGrey(r,g,b)→0–255     — greyscale only
- *   clarityPasses: [{radius, amount}]  — one or more unsharp passes BEFORE curve
- *   lut: Uint8Array          — tone curve applied after clarity
- *   unsharp / unsharpAmount  — fine sharpening AFTER curve
- *
- * Thumbnails: toGrey + lut applied inline (clarity skipped at thumb size).
+ * Four greyscale conversions. Replaces the old Screen / Screen R / Screen G / Screen B
+ * filter variants — pipeline is identical, only toGrey differs, so a row of thumbnails
+ * is cleaner than four FILTERS entries.
  */
-// Shared pipeline config for all Screen variants.
-// Defined once here; each variant only differs in toGrey.
+const CHANNELS = [
+  { id: 'lum', label: 'Lum', fn: (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b },
+  { id: 'r',   label: 'R',   fn: (r)       => r },
+  { id: 'g',   label: 'G',   fn: (r, g)    => g },
+  { id: 'b',   label: 'B',   fn: (r, g, b) => b },
+];
+
+/* ── Screen pipeline config ── */
 const SCREEN_PIPELINE = {
   lut: SCREEN_LUT,
   clarityPasses: [
     { radius: '25px', amount: 0.5 }, // macro: pushes inter-object shadows toward black
     { radius: '5px',  amount: 0.4 }, // micro: fine grain/scratch/texture pop
   ],
-  unsharp: true,
-  unsharpAmount: 1.0,
+  unsharpAmount: 1.0, // final edge sharpen — scaled by adjustments.sharpness
 };
 
-const FILTERS = [
-  {
-    // Luminosity mix. Best all-round starting point.
-    id: 'screen', label: 'Screen',
-    toGrey: (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b,
-    ...SCREEN_PIPELINE,
-  },
-  {
-    // Red channel only. Brightens warm tones/skin, darkens blues and greens.
-    // Good for portraits and sunlit scenes.
-    id: 'screen-r', label: 'Screen R',
-    toGrey: (r) => r,
-    ...SCREEN_PIPELINE,
-  },
-  {
-    // Green channel only. Closest to luminosity; emphasises foliage and mid-tones.
-    // Tends to produce smooth, even results with good shadow detail.
-    id: 'screen-g', label: 'Screen G',
-    toGrey: (r, g) => g,
-    ...SCREEN_PIPELINE,
-  },
-  {
-    // Blue channel only. Darkens warm tones, brightens skies and cool highlights.
-    // Dramatic on architecture, water, and night scenes.
-    id: 'screen-b', label: 'Screen B',
-    toGrey: (r, g, b) => b,
-    ...SCREEN_PIPELINE,
-  },
-];
+/* ── Adjustments state ── */
+const adjustments = { channel: 'lum', brightness: 0, contrast: 0, sharpness: 100, noise: 0 };
+let filteredImageData = null; // grey snapshot after full pipeline, before B/C/N post-pass
+let blobGen = 0;              // stale-blob guard: only the latest toBlob() call updates the preview
 
-/* ── State ── */
+/* ── Other state ── */
 let mode = 'auto';
 let cropper = null;
 let cropBlobUrl = null;
@@ -344,7 +368,6 @@ let originalBlob = null;
 let sourceCanvas = null;
 let outputBlob = null;
 let previewUrl = null;
-let currentFilter = FILTERS[0].id;
 
 /* ── Elements ── */
 const $ = id => document.getElementById(id);
@@ -353,7 +376,7 @@ const workCtx    = workCanvas.getContext('2d');
 const dropzone   = $('dropzone');
 const fileInput  = $('file-input');
 const cropImg    = $('crop-img');
-const filterRow  = $('filter-row');
+const channelRow = $('channel-row');
 const previewImg = $('preview-img');
 
 workCanvas.width = W; workCanvas.height = H;
@@ -442,12 +465,12 @@ function showCropUI(blob) {
       const nw = cropImg.naturalWidth, nh = cropImg.naturalHeight;
       if (nw < W || nh < H) {
         $('crop-warn').textContent =
-          `⚠ Image (\${nw}×\${nh}) is smaller than \${W}×\${H} — output will be upscaled`;
+          `⚠ Image (${nw}×${nh}) is smaller than ${W}×${H} — output will be upscaled`;
       }
       cropper = new Cropper(cropImg, {
         aspectRatio: W / H,
         viewMode: 1,
-        dragMode: 'move',       // dragging canvas pans image; drag crop box to reposition it
+        dragMode: 'move',
         guides: false,
         center: false,
         highlight: false,
@@ -459,8 +482,6 @@ function showCropUI(blob) {
         toggleDragModeOnDblclick: false,
         cropBoxResizable: false,
         ready() {
-          // Set crop box to exactly W×H natural image pixels, centred.
-          // No autoCropArea fraction — we need a real pixel count.
           cropper.setData({
             x: Math.max(0, Math.round((nw - W) / 2)),
             y: Math.max(0, Math.round((nh - H) / 2)),
@@ -483,12 +504,9 @@ $('btn-back-crop').addEventListener('click', () => {
 
 $('btn-confirm-crop').addEventListener('click', () => {
   if (!cropper) return;
-  const data = cropper.getData(true); // natural image pixel coords, rounded
+  const data = cropper.getData(true);
   sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = W; sourceCanvas.height = H;
-  // drawImage with sx/sy/sw/sh in natural pixels, dw/dh = W/H.
-  // When data.width === W and data.height === H: pure 1:1 copy, zero resize.
-  // Only scales if image was smaller than W/H (warned at crop UI entry).
   sourceCanvas.getContext('2d').drawImage(
     cropImg,
     data.x, data.y, data.width, data.height,
@@ -502,30 +520,33 @@ $('btn-confirm-crop').addEventListener('click', () => {
 
 /* ── Filter section ── */
 function setupFilters() {
-  currentFilter = FILTERS[0].id;
-  buildThumbnails();
+  buildChannelStrip();
   show('filter');
-  $('btn-recrop').style.display = ''; // always available
+  $('btn-recrop').style.display = '';
   applyFilter();
 }
 
-function buildThumbnails() {
+/* ── Channel strip ──
+ *
+ * Four thumbnails (Lum / R / G / B). Clicking one switches greyscale conversion
+ * and re-runs the full pipeline. Thumbnails apply toGrey + LUT inline —
+ * clarity passes are skipped at thumb size (imperceptible, expensive).
+ */
+function buildChannelStrip() {
   const tc = document.createElement('canvas');
   tc.width = THUMB_W; tc.height = THUMB_H;
   tc.getContext('2d').drawImage(sourceCanvas, 0, 0, THUMB_W, THUMB_H);
   const td = tc.getContext('2d').getImageData(0, 0, THUMB_W, THUMB_H);
 
-  filterRow.innerHTML = '';
-  FILTERS.forEach(filter => {
-    const thumb = document.createElement('canvas');
-    thumb.width = THUMB_W; thumb.height = THUMB_H;
+  channelRow.innerHTML = '';
+  for (const ch of CHANNELS) {
+    const thumb  = document.createElement('canvas');
+    thumb.width  = THUMB_W; thumb.height = THUMB_H;
     const tCtx   = thumb.getContext('2d');
     const result = tCtx.createImageData(THUMB_W, THUMB_H);
-    const greyFn = filter.toGrey || filter.fn;
-
     for (let i = 0; i < td.data.length; i += 4) {
-      let v = Math.max(0, Math.min(255, Math.round(greyFn(td.data[i], td.data[i+1], td.data[i+2]))));
-      if (filter.lut) v = filter.lut[v]; // apply tone curve for thumbnail preview
+      let v = Math.max(0, Math.min(255, Math.round(ch.fn(td.data[i], td.data[i+1], td.data[i+2]))));
+      v = SCREEN_LUT[v];
       result.data[i] = result.data[i+1] = result.data[i+2] = v;
       result.data[i+3] = 255;
     }
@@ -533,81 +554,114 @@ function buildThumbnails() {
 
     const item  = document.createElement('div');
     const label = document.createElement('span');
-    item.className = 'filter-item' + (filter.id === currentFilter ? ' sel' : '');
-    item.dataset.filter = filter.id;
-    label.textContent = filter.label;
+    item.className = 'filter-item' + (ch.id === adjustments.channel ? ' sel' : '');
+    label.textContent = ch.label;
     item.append(thumb, label);
     item.addEventListener('click', () => {
-      filterRow.querySelectorAll('.filter-item').forEach(i => i.classList.remove('sel'));
+      channelRow.querySelectorAll('.filter-item').forEach(i => i.classList.remove('sel'));
       item.classList.add('sel');
-      currentFilter = filter.id;
+      adjustments.channel = ch.id;
       applyFilter();
     });
-    filterRow.append(item);
-  });
+    channelRow.append(item);
+  }
 }
 
-/* ── Apply filter ──
+/* ── Apply filter (full pipeline) ──
  *
- * Standard filter:  fn() → putImageData → [unsharp]
- * Screen filter:    toGrey() → putImageData → clarityPasses[] → lut → unsharp
+ * Runs on: channel change, sharpness change (debounced 150 ms).
+ * Stores grey result as filteredImageData, then calls applyAdjustments().
+ *
+ * Pipeline: toGrey → clarity passes → LUT → fine sharpen → snapshot
  */
 function applyFilter() {
   if (!sourceCanvas) return;
-  const filter = FILTERS.find(f => f.id === currentFilter);
-  const src    = sourceCanvas.getContext('2d').getImageData(0, 0, W, H);
-  const out    = workCtx.createImageData(W, H);
-  const greyFn = filter.toGrey || filter.fn;
+  const ch  = CHANNELS.find(c => c.id === adjustments.channel);
+  const src = sourceCanvas.getContext('2d').getImageData(0, 0, W, H);
+  const out = workCtx.createImageData(W, H);
 
   // Step 1: Greyscale conversion
   for (let i = 0; i < src.data.length; i += 4) {
-    const v = Math.max(0, Math.min(255, Math.round(greyFn(src.data[i], src.data[i+1], src.data[i+2]))));
+    const v = Math.max(0, Math.min(255, Math.round(ch.fn(src.data[i], src.data[i+1], src.data[i+2]))));
     out.data[i] = out.data[i+1] = out.data[i+2] = v;
     out.data[i+3] = 255;
   }
   workCtx.putImageData(out, 0, 0);
 
-  const finish = () => {
-    workCanvas.toBlob(blob => {
-      outputBlob = blob;
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-      previewUrl = URL.createObjectURL(blob);
-      previewImg.src = previewUrl;
-    }, 'image/jpeg', 0.92);
-  };
-
   const steps = [];
 
-  // Step 2: Clarity passes (pre-curve, local contrast enhancement)
-  // Supports both clarityPasses[] and legacy single clarity:{} property
-  const clarityList = filter.clarityPasses || (filter.clarity ? [filter.clarity] : []);
-  for (const pass of clarityList) {
+  // Step 2: Clarity passes (fixed amounts — local contrast, independent of Sharpness slider)
+  for (const pass of SCREEN_PIPELINE.clarityPasses) {
     steps.push(() => unsharpMask(workCanvas, pass.amount, pass.radius));
   }
 
   // Step 3: Tone curve LUT
-  if (filter.lut) {
-    steps.push(() => {
-      const d = workCtx.getImageData(0, 0, W, H);
-      for (let i = 0; i < d.data.length; i += 4) {
-        const v = filter.lut[d.data[i]];
-        d.data[i] = d.data[i+1] = d.data[i+2] = v;
-      }
-      workCtx.putImageData(d, 0, 0);
-    });
+  steps.push(() => {
+    const d = workCtx.getImageData(0, 0, W, H);
+    for (let i = 0; i < d.data.length; i += 4) {
+      const v = SCREEN_PIPELINE.lut[d.data[i]];
+      d.data[i] = d.data[i+1] = d.data[i+2] = v;
+    }
+    workCtx.putImageData(d, 0, 0);
+  });
+
+  // Step 4: Fine edge sharpening, scaled by Sharpness slider (0–200 → 0×–2×)
+  const sharpScale = adjustments.sharpness / 100;
+  if (sharpScale > 0) {
+    steps.push(() => unsharpMask(workCanvas, SCREEN_PIPELINE.unsharpAmount * sharpScale, '1.5px'));
   }
 
-  // Step 4: Fine sharpening
-  if (filter.unsharp) {
-    steps.push(() => unsharpMask(workCanvas, filter.unsharpAmount || 0.8, '1.5px'));
-  }
+  // Snapshot grey result, then apply B/C/N post-pass
+  steps.reduce((p, fn) => p.then(fn), Promise.resolve()).then(() => {
+    filteredImageData = workCtx.getImageData(0, 0, W, H);
+    applyAdjustments();
+  });
+}
 
-  // Run steps in sequence, then finish
-  steps.reduce((p, fn) => p.then(fn), Promise.resolve()).then(finish);
+/* ── Apply adjustments (fast post-pass) ──
+ *
+ * Runs on: brightness, contrast, noise slider change.
+ * Reads filteredImageData (pipeline output), writes to workCanvas.
+ * Does NOT re-run clarity passes or LUT.
+ *
+ * Contrast formula: factor=(100+c)/100
+ *   c=-100 → factor=0 (flat grey), c=0 → factor=1 (no change), c=+100 → factor=2 (double)
+ *
+ * Noise: re-randomised on each call. A static pre-generated noise layer would
+ * stop the grain pattern shifting when brightness/contrast move — deferred for now.
+ */
+function applyAdjustments() {
+  if (!filteredImageData) return;
+  const { brightness, contrast, noise } = adjustments;
+  const src = filteredImageData.data;
+  const out = workCtx.createImageData(W, H);
+  const dst = out.data;
+  const cf  = (100 + contrast) / 100;
+
+  for (let i = 0; i < src.length; i += 4) {
+    let v = src[i];
+    if (contrast !== 0) v = (v - 128) * cf + 128;
+    v += brightness;
+    if (noise > 0) v += (Math.random() * 2 - 1) * noise;
+    dst[i] = dst[i+1] = dst[i+2] = Math.max(0, Math.min(255, Math.round(v)));
+    dst[i+3] = 255;
+  }
+  workCtx.putImageData(out, 0, 0);
+
+  // Stale-blob guard: rapid slider moves queue multiple toBlob() calls;
+  // only the callback matching the latest gen updates the preview and outputBlob.
+  const gen = ++blobGen;
+  workCanvas.toBlob(blob => {
+    if (gen !== blobGen) return;
+    outputBlob = blob;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(blob);
+    previewImg.src = previewUrl;
+  }, 'image/jpeg', 0.92);
 }
 
 /* ── Unsharp mask — GPU blur (CSS filter) + per-pixel subtract ──
- * radius: CSS blur value, e.g. '1.5px' (fine sharpen) or '20px' (clarity)
+ * radius: CSS blur value, e.g. '1.5px' (fine sharpen) or '25px' (clarity)
  */
 async function unsharpMask(canvas, amount, radius = '1.5px') {
   const { width: w, height: h } = canvas;
@@ -625,6 +679,34 @@ async function unsharpMask(canvas, amount, radius = '1.5px') {
   }
   ctx.putImageData(orig, 0, 0);
 }
+
+/* ── Slider wiring ──
+ *
+ * wireSlider(inputId, adjustmentsKey, displayFmt, fullPipeline)
+ *   fullPipeline=true  → debounced applyFilter()     (channel / sharpness)
+ *   fullPipeline=false → immediate applyAdjustments() (brightness / contrast / noise)
+ */
+let filterTimer = null;
+
+function wireSlider(id, key, fmt, fullPipeline) {
+  const input = $(id);
+  const val   = $(`val-${id.slice(4)}`); // 'adj-brightness' → 'val-brightness'
+  input.addEventListener('input', () => {
+    adjustments[key] = +input.value;
+    val.textContent = fmt(+input.value);
+    if (fullPipeline) {
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(applyFilter, 150);
+    } else {
+      applyAdjustments();
+    }
+  });
+}
+
+wireSlider('adj-brightness', 'brightness', v => (v > 0 ? '+' : '') + v,     false);
+wireSlider('adj-contrast',   'contrast',   v => (v > 0 ? '+' : '') + v,     false);
+wireSlider('adj-sharpness',  'sharpness',  v => (v / 100).toFixed(1) + '×', true);
+wireSlider('adj-noise',      'noise',      v => v,                           false);
 
 /* ── Send to Kindle ── */
 $('btn-send').addEventListener('click', async () => {
@@ -649,10 +731,14 @@ function download() {
 $('btn-recrop').addEventListener('click', () => { if (originalBlob) showCropUI(originalBlob); });
 
 $('btn-reset').addEventListener('click', () => {
-  sourceCanvas = null; outputBlob = null; originalBlob = null;
+  sourceCanvas = null; filteredImageData = null; outputBlob = null; originalBlob = null;
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
   fileInput.value = '';
-  currentFilter = FILTERS[0].id;
+  Object.assign(adjustments, { channel: 'lum', brightness: 0, contrast: 0, sharpness: 100, noise: 0 });
+  $('adj-brightness').value = 0;   $('val-brightness').textContent = '0';
+  $('adj-contrast').value   = 0;   $('val-contrast').textContent   = '0';
+  $('adj-sharpness').value  = 100; $('val-sharpness').textContent  = '1.0×';
+  $('adj-noise').value      = 0;   $('val-noise').textContent      = '0';
   show('drop');
 });
 </script>
